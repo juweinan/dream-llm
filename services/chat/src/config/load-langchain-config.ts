@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as yaml from 'js-yaml';
+import { load } from 'js-yaml';
 
 export type LangChainAppConfig = {
   llm: {
@@ -31,19 +31,25 @@ export type LangChainApiKeys = {
   vectorDbApiKey?: string;
 };
 
+const parseYaml = load as unknown as (source: string) => unknown;
+
 export function loadLangChainConfig(): LangChainAppConfig {
   const filePath = path.resolve(__dirname, '../../config/langchain.yaml');
   const raw = fs.readFileSync(filePath, 'utf8');
+  const parsed = parseYaml(raw);
 
-  return yaml.load(raw) as LangChainAppConfig;
+  return parsed as LangChainAppConfig;
 }
 
 export function getApiKeys(): LangChainApiKeys {
+  const openaiApiKey =
+    process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? '';
+
   return {
-    openaiApiKey: process.env.OPENAI_API_KEY ?? '',
-    openaiBaseUrl: process.env.OPENAI_BASE_URL,
-    embeddingApiKey:
-      process.env.EMBEDDING_API_KEY ?? process.env.OPENAI_API_KEY ?? '',
+    openaiApiKey,
+    openaiBaseUrl:
+      process.env.OPENAI_BASE_URL ?? process.env.ANTHROPIC_BASE_URL,
+    embeddingApiKey: process.env.EMBEDDING_API_KEY ?? openaiApiKey,
     vectorDbUrl: process.env.VECTOR_DB_URL,
     vectorDbApiKey: process.env.VECTOR_DB_API_KEY,
   };

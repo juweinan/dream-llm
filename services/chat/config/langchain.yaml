@@ -1,6 +1,6 @@
 llm:
-  provider: openai
-  model: claude-opus-4-7
+  provider: deepseek
+  model: deepseek-v4-pro
   temperature: 0
   maxTokens: 800
 
