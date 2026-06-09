@@ -6,7 +6,7 @@ export default function Home() {
   const [result, setResult] = useState<string>('');
 
   async function callApi() {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/hello`);
+    const res = await fetch(`/api/hello`);
     const data = await res.json();
     setResult(data.message);
   }
