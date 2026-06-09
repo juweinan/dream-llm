@@ -55,7 +55,10 @@ export class LlmService {
 
   async batch(count = 2) {
     const safeCount = Math.max(1, count);
-    const responses = await this.model.batch(
+    const model = this.model as {
+      batch: (inputs: BaseMessage[][]) => Promise<Array<{ text: string }>>;
+    };
+    const responses = await model.batch(
       Array.from({ length: safeCount }, () => this.buildMessages()),
     );
 

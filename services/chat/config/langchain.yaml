@@ -1,6 +1,11 @@
 llm:
+  # deepseek 模型
   provider: deepseek
   model: deepseek-v4-pro
+
+  # Claude 模型
+  # provider: anthropic
+  # model: claude-opus-4-7
   temperature: 0
   maxTokens: 800
 
