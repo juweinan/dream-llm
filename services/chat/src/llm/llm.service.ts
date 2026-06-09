@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   BaseMessage,
   HumanMessage,
@@ -17,12 +17,23 @@ export class LlmService {
     return [new SystemMessage(SYSTEM_ROLE), new HumanMessage(INPUT_TEXT)];
   }
 
+  private buildStructuredMessages(input: string, promptPrefix: string) {
+    const normalizedInput = input.trim();
+    if (!normalizedInput) {
+      throw new BadRequestException('input 不能为空');
+    }
+
+    return [
+      new SystemMessage('你是一名需求结构化抽取助手'),
+      new HumanMessage(`${promptPrefix}${normalizedInput}`),
+    ] satisfies BaseMessage[];
+  }
+
   async invokeDemo(input: string): Promise<string> {
-    const systemMessage = new SystemMessage('你是一名需求结构化抽取助手');
-    const humanMessage = new HumanMessage(
-      `请从下面文本中抽取 action、constraints、entities：\n${input}`,
+    const messages = this.buildStructuredMessages(
+      input,
+      '请从下面文本中抽取 action、constraints、entities：\n',
     );
-    const messages: BaseMessage[] = [systemMessage, humanMessage];
     const response = await this.model.invoke(messages);
     return response.content.toString();
   }
@@ -37,35 +48,46 @@ export class LlmService {
     };
   }
 
-  async stream() {
-    const chunks: string[] = [];
+  async *stream(input: string) {
+    const messages = this.buildStructuredMessages(
+      input,
+      '请逐步分析并输出结构化抽取结果，',
+    );
 
-    for await (const chunk of await this.model.stream(this.buildMessages())) {
+    for await (const chunk of await this.model.stream(messages)) {
       if (chunk.text) {
-        chunks.push(chunk.text);
+        yield chunk.text;
       }
     }
-
-    return {
-      input: INPUT_TEXT,
-      content: chunks.join(''),
-      chunks,
-    };
   }
 
-  async batch(count = 2) {
-    const safeCount = Math.max(1, count);
+  async batchDemo(inputs: string[]) {
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      throw new BadRequestException('inputs 不能为空数组');
+    }
+
+    const safeInputs = inputs
+      .map((input) => input.trim())
+      .filter((input) => input.length > 0);
+
+    if (safeInputs.length === 0) {
+      throw new BadRequestException('inputs 不能为空数组');
+    }
+
     const model = this.model as {
       batch: (inputs: BaseMessage[][]) => Promise<Array<{ text: string }>>;
     };
     const responses = await model.batch(
-      Array.from({ length: safeCount }, () => this.buildMessages()),
+      safeInputs.map((input) => [
+        new SystemMessage('你是一名需求结构化抽取助手'),
+        new HumanMessage(input),
+      ]),
     );
 
     return {
-      input: INPUT_TEXT,
-      count: safeCount,
-      items: responses.map((response) => ({
+      count: safeInputs.length,
+      items: responses.map((response, index) => ({
+        input: safeInputs[index],
         content: response.text,
         response,
       })),
