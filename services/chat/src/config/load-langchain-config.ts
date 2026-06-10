@@ -28,6 +28,8 @@ export type LangChainApiKeys = {
   openaiBaseUrl?: string;
   anthropicApiKey: string;
   anthropicBaseUrl?: string;
+  deepseekApiKey: string;
+  deepseekBaseUrl?: string;
   embeddingApiKey: string;
   vectorDbUrl?: string;
   vectorDbApiKey?: string;
@@ -48,6 +50,8 @@ export function getApiKeys(): LangChainApiKeys {
     process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? '';
   const anthropicApiKey =
     process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.OPENAI_API_KEY ?? '';
+  const deepseekApiKey =
+    process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY ?? '';
 
   return {
     openaiApiKey,
@@ -56,6 +60,9 @@ export function getApiKeys(): LangChainApiKeys {
     anthropicApiKey,
     anthropicBaseUrl:
       process.env.ANTHROPIC_BASE_URL ?? process.env.OPENAI_BASE_URL,
+    deepseekApiKey,
+    deepseekBaseUrl:
+      process.env.DEEPSEEK_BASE_URL ?? process.env.OPENAI_BASE_URL,
     embeddingApiKey: process.env.EMBEDDING_API_KEY ?? openaiApiKey,
     vectorDbUrl: process.env.VECTOR_DB_URL,
     vectorDbApiKey: process.env.VECTOR_DB_API_KEY,

@@ -1,7 +1,8 @@
 llm:
   # deepseek 模型
   provider: deepseek
-  model: deepseek-v4-pro
+  model: deepseek-chat
+  # model: deepseek-v4-pro
 
   # Claude 模型
   # provider: anthropic

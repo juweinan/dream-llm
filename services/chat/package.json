@@ -16,6 +16,7 @@
     "@autix/contracts": "workspace:*",
     "@langchain/anthropic": "^1.4.0",
     "@langchain/core": "^1.1.48",
+    "@langchain/deepseek": "^1.0.27",
     "@langchain/openai": "^1.4.7",
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",

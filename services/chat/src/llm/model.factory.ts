@@ -1,4 +1,5 @@
 import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatDeepSeek } from '@langchain/deepseek';
 import { ChatOpenAI } from '@langchain/openai';
 import {
   getApiKeys,
@@ -17,6 +18,28 @@ export function createChatModel() {
       maxTokens: config.llm.maxTokens,
     });
   }
+
+  if (config.llm.provider === 'deepseek') {
+    return new ChatDeepSeek({
+      apiKey: apiKeys.deepseekApiKey,
+      configuration: apiKeys.deepseekBaseUrl
+        ? { baseURL: apiKeys.deepseekBaseUrl }
+        : undefined,
+      model: config.llm.model,
+      temperature: config.llm.temperature,
+      maxTokens: config.llm.maxTokens,
+    });
+  }
+
+  // return new ChatOpenAI({
+  //   apiKey: apiKeys.openaiApiKey,
+  //   configuration: apiKeys.openaiBaseUrl
+  //     ? { baseURL: apiKeys.openaiBaseUrl }
+  //     : undefined,
+  //   model: config.llm.model,
+  //   temperature: config.llm.temperature,
+  //   maxTokens: config.llm.maxTokens,
+  // });
 
   return new ChatOpenAI({
     apiKey: apiKeys.openaiApiKey,

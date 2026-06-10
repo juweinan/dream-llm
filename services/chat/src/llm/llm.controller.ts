@@ -1,12 +1,16 @@
 import { Body, Controller, Logger, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { LlmService } from './llm.service';
+import { RequirementService } from './requirement.service';
 
 @Controller('api/langchain')
 export class LlmController {
   private readonly logger = new Logger(LlmController.name);
 
-  constructor(private readonly llmService: LlmService) {}
+  constructor(
+    private readonly llmService: LlmService,
+    private readonly requirementService: RequirementService,
+  ) {}
 
   @Post('invoke')
   async invoke(@Body() body: { input: string }) {
@@ -14,6 +18,16 @@ export class LlmController {
       return await this.llmService.invokeDemo(body.input);
     } catch (err) {
       this.logger.error('invokeDemo failed', err);
+      throw err;
+    }
+  }
+
+  @Post('structured')
+  async structured(@Body() body: { input?: string } = {}) {
+    try {
+      return await this.requirementService.extract(body.input ?? '');
+    } catch (err) {
+      this.logger.error('structured failed', err);
       throw err;
     }
   }
