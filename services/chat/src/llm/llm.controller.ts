@@ -22,6 +22,26 @@ export class LlmController {
     }
   }
 
+  @Post('tool-bind')
+  async toolBind(@Body() body: { input?: string } = {}) {
+    try {
+      return await this.llmService.toolBind(body.input ?? '');
+    } catch (err) {
+      this.logger.error('toolBind failed', err);
+      throw err;
+    }
+  }
+
+  @Post('tool-loop')
+  async toolLoop(@Body() body: { input?: string } = {}) {
+    try {
+      return await this.llmService.toolLoop(body.input ?? '');
+    } catch (err) {
+      this.logger.error('toolLoop failed', err);
+      throw err;
+    }
+  }
+
   @Post('structured')
   async structured(@Body() body: { input?: string } = {}) {
     try {

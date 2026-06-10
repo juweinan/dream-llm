@@ -3,10 +3,12 @@ import {
   BaseMessage,
   HumanMessage,
   SystemMessage,
+  ToolMessage,
 } from '@langchain/core/messages';
 import { createChatModel } from './model.factory';
 import { requirementChain } from './requirement.chain';
 import { createRequirementPromptTemplate } from './requirement.prompt-builder';
+import { basicTools } from './tools/basic.tools';
 
 const INPUT_TEXT = '用户注册时必须绑定手机号，密码至少8位';
 const SYSTEM_ROLE = '需求结构化抽取助手';
@@ -69,6 +71,76 @@ export class LlmService {
       content: response.content.toString(),
       response,
     };
+  }
+
+  async toolBind(input: string) {
+    const normalizedInput = this.normalizeInput(input);
+    const modelWithTools = this.model.bindTools([...basicTools]);
+    const messages: BaseMessage[] = [
+      new SystemMessage(
+        '你是一名需求结构化抽取助手。可按需调用工具检查约束有效性和查询实体定义。',
+      ),
+      new HumanMessage(`请分析以下需求，并在必要时调用工具：${normalizedInput}`),
+    ];
+    const response = await modelWithTools.invoke(messages);
+
+    return {
+      input: normalizedInput,
+      content: response.content.toString(),
+      toolCalls: response.tool_calls ?? [],
+      response,
+    };
+  }
+
+  async toolLoop(input: string) {
+    const normalizedInput = this.normalizeInput(input);
+    const modelWithTools = this.model.bindTools([...basicTools]);
+    const messages: BaseMessage[] = [
+      new SystemMessage(
+        '你是一名需求结构化抽取助手。可按需调用工具检查约束有效性和查询实体定义。',
+      ),
+      new HumanMessage(
+        `请基于以下需求做结构化分析；如有必要，先调用工具再输出最终结论：${normalizedInput}`,
+      ),
+    ];
+    const toolSteps: Array<{ name: string; args: unknown; result: unknown }> = [];
+
+    while (true) {
+      const response = await modelWithTools.invoke(messages);
+      messages.push(response);
+
+      if (!response.tool_calls?.length) {
+        return {
+          input: normalizedInput,
+          content: response.content.toString(),
+          toolSteps,
+          response,
+        };
+      }
+
+      for (const toolCall of response.tool_calls) {
+        const selectedTool = basicTools.find((tool) => tool.name === toolCall.name);
+        if (!selectedTool) {
+          continue;
+        }
+
+        const toolExecutor = selectedTool as {
+          invoke: (args: unknown) => Promise<unknown>;
+        };
+        const result = await toolExecutor.invoke(toolCall.args);
+        toolSteps.push({
+          name: toolCall.name,
+          args: toolCall.args,
+          result,
+        });
+        messages.push(
+          new ToolMessage({
+            tool_call_id: toolCall.id ?? toolCall.name,
+            content: JSON.stringify(result),
+          }),
+        );
+      }
+    }
   }
 
   async chainInvoke(input: string) {
