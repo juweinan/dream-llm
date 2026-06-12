@@ -1,39 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
-
-// ---------------------------------------------------------------
-// safePath — 沙箱校验，保证所有读写限制在 workspace/ 目录下
-// ---------------------------------------------------------------
-
-const WORKSPACE_ROOT = path.resolve(__dirname, '../../../workspace');
-
-function safePath(relativePath: string): string {
-  // 防御：拒绝绝对路径和 .. 穿越
-  if (path.isAbsolute(relativePath)) {
-    throw new Error(`不允许使用绝对路径: ${relativePath}`);
-  }
-
-  const resolved = path.resolve(WORKSPACE_ROOT, relativePath);
-
-  // 校验解析后的路径必须在 workspace 目录内
-  if (
-    !resolved.startsWith(WORKSPACE_ROOT + path.sep) &&
-    resolved !== WORKSPACE_ROOT
-  ) {
-    throw new Error(`路径越界，仅允许操作 workspace/ 目录: ${relativePath}`);
-  }
-
-  return resolved;
-}
-
-function ensureDir(filePath: string): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
+import { safePath, ensureDir } from '../utils/workspace.utils';
 
 // ---------------------------------------------------------------
 // query_requirement — 根据需求单号读取 JSON 文件

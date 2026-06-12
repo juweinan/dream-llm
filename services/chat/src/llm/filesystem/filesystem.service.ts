@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import * as fs from 'node:fs';
 import {
   HumanMessage,
   SystemMessage,
@@ -7,6 +8,7 @@ import {
 } from '@langchain/core/messages';
 import { createChatModel } from '../model.factory';
 import { businessTools } from '../tools/business.tools';
+import { safePath, ensureDir } from '../utils/workspace.utils';
 
 const SYSTEM_PROMPT = `你是一名需求分析助手。你可以调用文件系统工具来辅助分析：
 
@@ -109,5 +111,22 @@ export class FilesystemService {
         );
       }
     }
+  }
+
+  /**
+   * 将报告内容写入 workspace/reports/ 目录（业务侧统一入口）。
+   *
+   * 路径和内容均由调用方指定，内部经 safePath 沙箱校验。
+   *
+   * @param fileName 相对于 workspace/ 的报告文件名，如 reports/analysis-s1-2026-06-12.md
+   * @param content  报告文本内容
+   * @returns 写入文件的绝对路径
+   */
+  writeReport(fileName: string, content: string): string {
+    const resolved = safePath(fileName);
+    ensureDir(resolved);
+    fs.writeFileSync(resolved, content, 'utf8');
+    this.logger.log(`Report written: ${fileName}`);
+    return resolved;
   }
 }
