@@ -1,0 +1,17 @@
+{
+  "name": "@autix/database",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "scripts": {
+    "db:generate": "prisma generate --schema=../../services/user-system/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema=../../services/user-system/prisma/schema.prisma",
+    "db:seed": "bun run ../../services/user-system/prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "5"
+  },
+  "devDependencies": {
+    "prisma": "5"
+  }
+}

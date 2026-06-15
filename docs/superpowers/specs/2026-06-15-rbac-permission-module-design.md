@@ -125,12 +125,15 @@ User ──┬── UserRole ──┬── Role ──┬── RolePermissio
 | DELETE | /api/users/:id | 禁用/删除 |
 
 ### Roles
+
+无分页，返回全量扁平数组（非 `{ items }` 包裹）。
 | 方法 | 路由 | 说明 |
 |---|---|---|
 | GET | /api/roles | 角色列表 |
+| GET | /api/roles/:id | 角色详情（含已分配权限） |
 | POST | /api/roles | 创建角色 |
 | PATCH | /api/roles/:id | 编辑角色 |
-| PATCH | /api/roles/:id/permissions | 分配权限 |
+| PATCH | /api/roles/:id/permissions | 分配权限（`{ permissionIds: string[] }`） |
 | DELETE | /api/roles/:id | 删除角色 |
 
 ### Permissions
@@ -171,7 +174,8 @@ Layout
 │           └── PermissionButton (按钮守卫)
 ```
 
-### 3 个核心组件
+### 前端组件
+
 | 组件 | 作用 | 用法示例 |
 |---|---|---|
 | AuthGuard | 路由守卫，包裹所有需登录页面 | `<AuthGuard><DashboardPage /></AuthGuard>` |
@@ -350,36 +354,47 @@ useEffect(() => {
 ## 文件结构
 
 ```
-services/user-system/            # 后端 NestJS
+services/user-system/            # 后端 NestJS (端口 4002)
+  .env                            # DATABASE_URL, JWT_SECRET, CORS_ORIGIN
+  prisma/
+    schema.prisma                 # 7 张表 + 4 枚举
+    seed.ts                       # 种子：super_admin + 2 角色 + 13 权限 + 授权
   src/
-    auth/                       # 登录/登出/刷新
-    users/                      # 用户管理
-    roles/                      # 角色管理
-    permissions/                # 权限管理
-    audit-logs/                 # 审计日志
-    common/
-      guards/                   # AuthGuard, SuperAdminGuard, PermissionGuard
-      decorators/               # @Permissions('user:page:view')
-    prisma/                     # PrismaService, schema.prisma
-    main.ts
+    main.ts                       # cookieParser + ValidationPipe + CORS
+    app.module.ts                 # 7 模块注册
+    prisma/                       # PrismaService（@Global）
+    common/guards/                # AuthGuard / SuperAdminGuard / PermissionGuard
+    common/decorators/            # @Permissions / @CurrentUser
+    auth/                         # login / refresh / logout（cookie 管理）
+    users/                        # 用户 CRUD + 角色分配
+    roles/                        # 角色 CRUD + 权限分配
+    permissions/                  # 权限树 + 创建
+    audit-logs/                   # 审计日志（只读分页）
+    account/                      # GET /me → 用户信息 + 权限码列表
 
-clients/admin-web/              # 前端 Next.js
-  app/
-    (auth)/login/
-    (main)/
-      dashboard/
-      users/
-      roles/
-      permissions/
-      audit-logs/
-      account/
-  components/
-    auth/                       # AuthGuard, PermissionGuard, PermissionButton
-    ui/                         # HeroUI 封装
-  contexts/
-    auth-context.tsx            # 用户信息 + 权限码 Set
+packages/database/               # 共享 Prisma Client 封装
+  src/index.ts                    # getPrisma() 单例
+  package.json                    # db:generate / db:migrate / db:seed 脚本
+
+clients/admin-web/               # 前端 Next.js 16 (端口 3001)
+  .env.local                      # NEXT_PUBLIC_API_URL=http://localhost:4002
+  next.config.ts                  # rewrites /api/* → localhost:4002（代理模式）
   lib/
-    api.ts                      # fetch 封装 + 401 刷新拦截
+    api.ts                        # Axios 实例 + 401 拦截器并发刷新
+  contexts/
+    auth-context.tsx              # AuthProvider + useAuth + 动态菜单
+  components/
+    auth/                         # AuthGuard / PermissionGuard / PermissionButton
+    ui/                           # Sidebar (272px)
+  app/
+    layout.tsx                    # Inter 字体 + AuthProvider
+    (auth)/login/page.tsx         # 登录页
+    (main)/layout.tsx             # AuthGuard + Sidebar
+    (main)/dashboard/page.tsx     # 仪表盘
+    (main)/users/page.tsx         # 用户管理（表格 + Drawer）
+    (main)/roles/page.tsx         # 角色管理（表格 + 权限树 Drawer）
+    (main)/permission-center/     # 权限树查看
+    (main)/profile/page.tsx       # 个人信息
 ```
 
 ---
