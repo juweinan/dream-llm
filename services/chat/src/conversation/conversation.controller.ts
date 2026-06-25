@@ -8,28 +8,14 @@ import {
   Post,
   Req,
   UseGuards,
-} from '@nestjs/common';
-import type { Request } from 'express';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { ConversationService } from './conversation.service';
-import { MessageService } from '../message/message.service';
-import { DbChatMessageHistory } from '../message/db-chat-history';
-import { createChatModel } from '../llm/model.factory';
-import {
-  ChatPromptTemplate,
-  MessagesPlaceholder,
-} from '@langchain/core/prompts';
-import { RunnableWithMessageHistory } from '@langchain/core/runnables';
-import { StringOutputParser } from '@langchain/core/output_parsers';
+} from "@nestjs/common";
+import type { Request } from "express";
+import { AuthGuard } from "../common/guards/auth.guard";
+import { ConversationService } from "./conversation.service";
+import { MessageService } from "../message/message.service";
+import { AdvancedAnalysisService } from "../llm/advanced-analysis.service";
 
-const CHAT_SYSTEM_PROMPT = `你是一名智能助手。你可以基于多轮对话的上下文理解用户意图，并给出专业、连贯的回答。
-
-要求：
-1. 记住并引用之前讨论过的内容
-2. 回答保持专业、清晰的中文表达
-3. 如果用户的问题不够明确，基于历史记录推断并友好地追问`;
-
-@Controller('api/conversations')
+@Controller("api/conversations")
 @UseGuards(AuthGuard)
 export class ConversationController {
   private readonly logger = new Logger(ConversationController.name);
@@ -37,6 +23,7 @@ export class ConversationController {
   constructor(
     private readonly conversationService: ConversationService,
     private readonly messageService: MessageService,
+    private readonly analysisService: AdvancedAnalysisService,
   ) {}
 
   private getUserId(req: Request): string {
@@ -70,8 +57,8 @@ export class ConversationController {
   /**
    * GET /api/conversations/:id/messages
    */
-  @Get(':id/messages')
-  async getMessages(@Req() req: Request, @Param('id') id: string) {
+  @Get(":id/messages")
+  async getMessages(@Req() req: Request, @Param("id") id: string) {
     const userId = this.getUserId(req);
     await this.conversationService.findById(id, userId);
 
@@ -93,53 +80,39 @@ export class ConversationController {
   /**
    * POST /api/conversations/:id/chat
    * Body: { input: string }
+   *
+   * 统一分析入口：历史 + 语义检索 + 多 Agent 编排 → 写 messages 表
    */
-  @Post(':id/chat')
+  @Post(":id/chat")
   async chat(
     @Req() req: Request,
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Body() body: { input: string },
   ) {
     const userId = this.getUserId(req);
     const input = body.input?.trim();
     if (!input) {
-      return { ok: false, error: 'input 不能为空' };
+      return { ok: false, error: "input 不能为空" };
     }
 
     await this.conversationService.findById(id, userId);
 
-    const model = createChatModel();
-    const prompt = ChatPromptTemplate.fromMessages([
-      ['system', CHAT_SYSTEM_PROMPT],
-      new MessagesPlaceholder('history'),
-      ['human', '{input}'],
-    ]);
+    const result = await this.analysisService.analyze(userId, id, input);
 
-    const chain = prompt.pipe(model).pipe(new StringOutputParser());
-
-    const withHistory = new RunnableWithMessageHistory({
-      runnable: chain,
-      getMessageHistory: (_sessionId) =>
-        new DbChatMessageHistory(id, this.messageService),
-      inputMessagesKey: 'input',
-      historyMessagesKey: 'history',
-    });
-
-    const response = await withHistory.invoke(
-      { input },
-      { configurable: { sessionId: id } },
-    );
-
-    return { ok: true, conversationId: id, content: response };
+    return {
+      ok: true,
+      conversationId: id,
+      ...result,
+    };
   }
 
   /**
    * DELETE /api/conversations/:id
    */
-  @Delete(':id')
-  async delete(@Req() req: Request, @Param('id') id: string) {
+  @Delete(":id")
+  async delete(@Req() req: Request, @Param("id") id: string) {
     const userId = this.getUserId(req);
     await this.conversationService.delete(id, userId);
-    return { ok: true, message: '会话已删除' };
+    return { ok: true, message: "会话已删除" };
   }
 }

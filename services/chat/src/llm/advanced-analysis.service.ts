@@ -1,22 +1,24 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OrchestratorService } from './agents/orchestrator.service';
-import { RunnableMemoryService } from './memory/runnable-memory.service';
-import { VectorStoreService } from './embedding/vector-store.service';
-import { FilesystemService } from './filesystem/filesystem.service';
+import { MessageService } from '../message/message.service';
+import { SearchService } from '../document/search.service';
 
 // ---------------------------------------------------------------
 // 类型
 // ---------------------------------------------------------------
 
 export interface AdvancedAnalysisResult {
-  sessionId: string;
   status: 'clarification_needed' | 'completed' | 'failed';
   clarificationQuestions?: string[];
   usedAgents: string[];
   fallback?: 'manual_review';
-  reportPath?: string;
   report?: string;
-  memoryUpdated?: boolean;
+  retrievedDocuments: Array<{
+    content: string;
+    score: number;
+    documentId: string;
+    filename: string;
+  }>;
 }
 
 // ---------------------------------------------------------------
@@ -24,8 +26,14 @@ export interface AdvancedAnalysisResult {
 // ---------------------------------------------------------------
 
 /**
- * 高级分析服务：串联多 Agent 编排 → 报告落盘 → 记忆写回 →
- * 相关规范灌入向量库，形成完整的分析闭环。
+ * 统一分析入口 — 串联多能力：
+ *
+ *   1. DbChatHistory → 多轮对话历史
+ *   2. SearchService → 语义检索用户文档（topK=3）
+ *   3. 拼接历史 + 检索上下文 + 当前输入
+ *   4. OrchestratorService → 多 Agent 编排分析
+ *   5. 用户输入 + 分析结论写入 messages 表
+ *   6. 返回 report / usedAgents / retrievedDocuments
  */
 @Injectable()
 export class AdvancedAnalysisService {
@@ -33,159 +41,164 @@ export class AdvancedAnalysisService {
 
   constructor(
     private readonly orchestrator: OrchestratorService,
-    private readonly memory: RunnableMemoryService,
-    private readonly vectorStore: VectorStoreService,
-    private readonly filesystem: FilesystemService,
+    private readonly messageService: MessageService,
+    private readonly searchService: SearchService,
   ) {}
 
-  /**
-   * 统一分析入口：
-   *
-   *   1. 从 session 历史中提取多轮上下文，增强 input
-   *   2. 调用 OrchestratorService 执行多 Agent 分析
-   *   3. 需要澄清 → 直接返回澄清问题（不落盘）
-   *   4. 不需要澄清 → 将报告写入 workspace/reports/
-   *   5. 把报告摘要提取为片段灌入向量库
-   *   6. 用 appendMessage() 写回会话记忆
-   *   7. 返回完整分析报告
-   */
   async analyze(
-    sessionId: string,
+    userId: string,
+    conversationId: string,
     input: string,
   ): Promise<AdvancedAnalysisResult> {
     const normalizedInput = input.trim();
     if (!normalizedInput) {
       return {
-        sessionId,
         status: 'failed',
         usedAgents: [],
         fallback: 'manual_review',
+        retrievedDocuments: [],
       };
     }
 
-    this.logger.log(`[analyze] sessionId=${sessionId} start`);
+    this.logger.log(
+      `[analyze] userId=${userId}, conversationId=${conversationId}`,
+    );
 
     try {
       // -----------------------------------------------------------
-      // Step 0: 从 Memory 中读取历史上下文，拼接到 input 末尾
+      // Step 1: 从 messages 表读取历史对话，转为上下文文本
       // -----------------------------------------------------------
-      const history = await this.memory.getHistory(sessionId);
-      const enhancedInput =
-        history.length > 0
-          ? `${normalizedInput}\n\n[多轮对话历史上下文]\n${history
+      const historyMessages =
+        await this.messageService.getHistoryAsLangChainMessages(conversationId);
+      const historyContext =
+        historyMessages.length > 0
+          ? historyMessages
               .map((msg) => `[${msg.getType()}]: ${msg.content}`)
-              .join('\n')}`
-          : normalizedInput;
+              .join('\n')
+          : '';
 
       // -----------------------------------------------------------
-      // Step 1: Multi-Agent 编排分析
+      // Step 2: 语义检索当前用户文档（topK=3）
       // -----------------------------------------------------------
-      const orchestration = await this.orchestrator.orchestrate(enhancedInput);
+      let retrievedDocuments: Array<{
+        content: string;
+        score: number;
+        documentId: string;
+        filename: string;
+      }> = [];
 
-      // -----------------------------------------------------------
-      // Step 2: 需要澄清 → 直接返回
-      // -----------------------------------------------------------
-      if (orchestration.status === 'clarification_needed') {
-        await this.memory.appendMessage(
-          sessionId,
+      let retrievedContext = '';
+
+      try {
+        retrievedDocuments = await this.searchService.similaritySearch(
           normalizedInput,
-          `[澄清请求] ${orchestration.clarificationQuestions?.join('；')}`,
+          userId,
+          3,
         );
-
-        return {
-          sessionId,
-          status: 'clarification_needed',
-          clarificationQuestions: orchestration.clarificationQuestions,
-          usedAgents: orchestration.usedAgents,
-          memoryUpdated: true,
-        };
+        if (retrievedDocuments.length > 0) {
+          retrievedContext = retrievedDocuments
+            .map((doc, i) => `[文档${i + 1}: ${doc.filename}]\n${doc.content}`)
+            .join('\n\n');
+        }
+      } catch (err) {
+        // 检索失败不阻塞主流程（用户可能还没有上传文档）
+        this.logger.warn(`Semantic search skipped: ${(err as Error).message}`);
       }
 
       // -----------------------------------------------------------
-      // Step 3: 失败 → 返回 fallback
+      // Step 3: 拼接完整上下文（历史 + 检索上下文）
       // -----------------------------------------------------------
-      if (orchestration.status === 'failed' || !orchestration.report) {
-        return {
-          sessionId,
-          status: 'failed',
-          usedAgents: orchestration.usedAgents,
-          fallback: 'manual_review',
-        };
+      const contextParts: string[] = [];
+      if (historyContext) {
+        contextParts.push(`[多轮对话历史]\n${historyContext}`);
       }
+      if (retrievedContext) {
+        contextParts.push(`[相关文档]\n${retrievedContext}`);
+      }
+      const fullContext = contextParts.join('\n\n');
 
       // -----------------------------------------------------------
-      // Step 4: 将报告写入 workspace/reports/（委托 FilesystemService）
+      // Step 4: 多 Agent 编排分析
       // -----------------------------------------------------------
-      const timestamp = new Date()
-        .toISOString()
-        .replace(/[:.]/g, '-')
-        .slice(0, 19);
-      const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const reportFileName = `reports/analysis-${safeSessionId}-${timestamp}.md`;
-
-      this.filesystem.writeReport(reportFileName, orchestration.report);
-      this.logger.log(`Report written: ${reportFileName}`);
-
-      // -----------------------------------------------------------
-      // Step 5: 把报告摘要灌入向量库（供后续语义检索）
-      // -----------------------------------------------------------
-      await this.indexReportToVector(orchestration.report);
-
-      // -----------------------------------------------------------
-      // Step 6: 用 appendMessage() 写回会话记忆
-      // -----------------------------------------------------------
-      await this.memory.appendMessage(
-        sessionId,
+      const orchestration = await this.orchestrator.orchestrate(
         normalizedInput,
-        `[分析报告已生成] ${reportFileName}\n\n分析摘要：${orchestration.report.slice(0, 300)}...`,
+        fullContext || undefined,
       );
 
       // -----------------------------------------------------------
-      // Step 7: 返回完整结果
+      // Step 5: 写 messages 表（用户输入 always；分析结论 when available）
       // -----------------------------------------------------------
+      await this.messageService.addMessage(
+        conversationId,
+        'USER',
+        normalizedInput,
+      );
+
+      if (orchestration.status === 'clarification_needed') {
+        const questions =
+          orchestration.clarificationQuestions?.join('；') || '';
+        await this.messageService.addMessage(
+          conversationId,
+          'ASSISTANT',
+          `[需要澄清] ${questions}`,
+        );
+
+        return {
+          status: 'clarification_needed',
+          clarificationQuestions: orchestration.clarificationQuestions,
+          usedAgents: orchestration.usedAgents,
+          retrievedDocuments,
+        };
+      }
+
+      if (orchestration.status === 'failed' || !orchestration.report) {
+        return {
+          status: 'failed',
+          usedAgents: orchestration.usedAgents,
+          fallback: 'manual_review',
+          retrievedDocuments,
+        };
+      }
+
+      // 分析完成：写分析结论到 ASSISTANT 消息
+      await this.messageService.addMessage(
+        conversationId,
+        'ASSISTANT',
+        orchestration.report,
+      );
+
+      // -----------------------------------------------------------
+      // Step 6: 返回
+      // -----------------------------------------------------------
+      this.logger.log(
+        `[analyze] completed: usedAgents=${orchestration.usedAgents.join(', ')}`,
+      );
+
       return {
-        sessionId,
         status: 'completed',
         usedAgents: orchestration.usedAgents,
-        reportPath: reportFileName,
         report: orchestration.report,
-        memoryUpdated: true,
+        retrievedDocuments,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`analyze failed: ${message}`);
 
+      // 失败时至少保存用户消息
+      try {
+        await this.messageService.addMessage(
+          conversationId,
+          'USER',
+          normalizedInput,
+        );
+      } catch {}
+
       return {
-        sessionId,
         status: 'failed',
         usedAgents: [],
         fallback: 'manual_review',
+        retrievedDocuments: [],
       };
-    }
-  }
-
-  // ---------------------------------------------------------------
-  // 私有：将报告内容拆段灌入向量库
-  // ---------------------------------------------------------------
-  private async indexReportToVector(report: string): Promise<void> {
-    try {
-      // 按 Markdown 二级标题分段
-      const sections = report
-        .split(/^## /m)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 50);
-
-      if (sections.length > 0) {
-        await this.vectorStore.addTexts(sections);
-        this.logger.log(
-          `Indexed ${sections.length} report sections to vector store`,
-        );
-      }
-    } catch (err) {
-      // 灌库失败不阻塞主流程
-      this.logger.warn(
-        `Index to vector store failed (non-blocking): ${(err as Error).message}`,
-      );
     }
   }
 }

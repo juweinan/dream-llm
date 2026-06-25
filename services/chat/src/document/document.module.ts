@@ -11,5 +11,6 @@ import { SearchService } from "./search.service";
   imports: [EmbeddingModule, SseModule],
   controllers: [DocumentController, SearchController],
   providers: [DocumentService, ChunkService, SearchService],
+  exports: [SearchService],
 })
 export class DocumentModule {}

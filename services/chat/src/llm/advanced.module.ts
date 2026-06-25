@@ -3,6 +3,8 @@ import { MemoryModule } from './memory/memory.module';
 import { FilesystemModule } from './filesystem/filesystem.module';
 import { EmbeddingModule } from './embedding/embedding.module';
 import { AgentsModule } from './agents/agents.module';
+import { DocumentModule } from '../document/document.module';
+import { MessageModule } from '../message/message.module';
 import { AdvancedAnalysisService } from './advanced-analysis.service';
 import { AdvancedController } from './advanced.controller';
 
@@ -15,7 +17,14 @@ import { AdvancedController } from './advanced.controller';
  * - Advanced（统一分析入口）
  */
 @Module({
-  imports: [MemoryModule, FilesystemModule, EmbeddingModule, AgentsModule],
+  imports: [
+    MemoryModule,
+    FilesystemModule,
+    EmbeddingModule,
+    AgentsModule,
+    DocumentModule,
+    MessageModule,
+  ],
   providers: [AdvancedAnalysisService],
   controllers: [AdvancedController],
   exports: [AdvancedAnalysisService],

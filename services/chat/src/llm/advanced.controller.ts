@@ -1,4 +1,6 @@
-import { Body, Controller, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Logger, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
+import { AuthGuard } from '../common/guards/auth.guard';
 import { AdvancedAnalysisService } from './advanced-analysis.service';
 
 @Controller('api/advanced')
@@ -7,27 +9,38 @@ export class AdvancedController {
 
   constructor(private readonly advancedAnalysis: AdvancedAnalysisService) {}
 
+  private getUserId(req: Request): string {
+    return (req as any).user.sub as string;
+  }
+
   /**
    * POST /api/advanced/analyze
-   * Body: { sessionId: string, input: string }
+   * Body: { conversationId: string, input: string }
    *
    * 统一分析入口：
-   *   Memory 历史上下文增强
-   *   → Multi-Agent 编排分析
-   *   → 报告落盘 + 向量灌库 + 记忆写回
+   *   历史 + 语义检索 + 多 Agent 编排 → 写 messages 表
    */
   @Post('analyze')
-  async analyze(@Body() body: { sessionId?: string; input?: string } = {}) {
+  @UseGuards(AuthGuard)
+  async analyze(
+    @Req() req: Request,
+    @Body() body: { conversationId?: string; input?: string } = {},
+  ) {
     try {
-      const { sessionId, input } = body;
+      const userId = this.getUserId(req);
+      const { conversationId, input } = body;
 
-      if (!sessionId?.trim() || !input?.trim()) {
-        return { ok: false, error: 'sessionId 和 input 不能为空' };
+      if (!conversationId?.trim() || !input?.trim()) {
+        return { ok: false, error: 'conversationId 和 input 不能为空' };
       }
 
       return {
         ok: true,
-        result: await this.advancedAnalysis.analyze(sessionId, input),
+        result: await this.advancedAnalysis.analyze(
+          userId,
+          conversationId,
+          input,
+        ),
       };
     } catch (err) {
       this.logger.error('analyze failed', err);

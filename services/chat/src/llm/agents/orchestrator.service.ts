@@ -58,9 +58,19 @@ export class OrchestratorService {
    *
    * - 需要澄清时：返回 clarificationQuestions 并终止
    * - 失败时：返回 fallback: 'manual_review'
+   *
+   * @param input 用户输入
+   * @param retrievedContext 可选的检索增强上下文（来自语义检索或历史对话）
    */
-  async orchestrate(input: string): Promise<OrchestrationResult> {
+  async orchestrate(input: string, retrievedContext?: string): Promise<OrchestrationResult> {
     const normalizedInput = input.trim();
+    const contextPart = retrievedContext?.trim();
+
+    // 将检索上下文拼接到输入中
+    const fullInput = contextPart
+      ? `${normalizedInput}\n\n[参考上下文]\n${contextPart}`
+      : normalizedInput;
+
     if (!normalizedInput) {
       return {
         mode: 'fixed',
@@ -86,7 +96,7 @@ export class OrchestratorService {
       // Step 1: 抽取（extract）
       // -----------------------------------------------------------
       this.logger.log('[Step 1] extractAgent');
-      const extractRaw = await extractAgent.invoke({ input: normalizedInput });
+      const extractRaw = await extractAgent.invoke({ input: fullInput });
       const extracted = this.safeParseJSON<ExtractResult>(extractRaw);
 
       usedAgents.push('extract');
@@ -97,7 +107,7 @@ export class OrchestratorService {
       // -----------------------------------------------------------
       this.logger.log('[Step 2] clarifyAgent');
       const clarifyRaw = await clarifyAgent.invoke({
-        input: normalizedInput,
+        input: fullInput,
         extracted: JSON.stringify(extracted, null, 2),
       });
       const clarification = this.safeParseJSON<ClarifyResult>(clarifyRaw);
@@ -132,12 +142,12 @@ export class OrchestratorService {
 
       const [analysisRaw, riskRaw] = await Promise.all([
         analysisAgent.invoke({
-          input: normalizedInput,
+          input: fullInput,
           extracted: extractedStr,
           clarification: clarificationStr,
         }),
         riskAgent.invoke({
-          input: normalizedInput,
+          input: fullInput,
           extracted: extractedStr,
         }),
       ]);
@@ -154,7 +164,7 @@ export class OrchestratorService {
       // -----------------------------------------------------------
       this.logger.log('[Step 4] summaryAgent');
       const summaryRaw = await summaryAgent.invoke({
-        input: normalizedInput,
+        input: fullInput,
         extracted: extractedStr,
         clarification: clarificationStr,
         analysis: JSON.stringify(analysis, null, 2),
