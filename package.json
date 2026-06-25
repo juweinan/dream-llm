@@ -20,5 +20,8 @@
   "devDependencies": {
     "turbo": "^2.8.20",
     "wait-on": "^9.0.5"
+  },
+  "dependencies": {
+    "@nestjs/swagger": "^11.4.4"
   }
 }
