@@ -1,13 +1,20 @@
-import { Module } from "@nestjs/common";
-import { AppController } from "./app.controller";
-import { AppService } from "./app.service";
-import { LlmModule } from "./llm/llm.module";
-import { AdvancedModule } from "./llm/advanced.module";
-import { PrismaModule } from "./prisma/prisma.module";
-import { ConversationModule } from "./conversation/conversation.module";
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { LlmModule } from './llm/llm.module';
+import { AdvancedModule } from './llm/advanced.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { ConversationModule } from './conversation/conversation.module';
+import { DocumentModule } from './document/document.module';
 
 @Module({
-  imports: [PrismaModule, LlmModule, AdvancedModule, ConversationModule],
+  imports: [
+    PrismaModule,
+    LlmModule,
+    AdvancedModule,
+    ConversationModule,
+    DocumentModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })

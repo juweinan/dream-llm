@@ -18,8 +18,9 @@ export class AuthService {
       throw new UnauthorizedException('用户名或密码错误');
 
     const accessToken = this.signAccess(user);
-    const refreshToken = randomBytes(48).toString('hex');
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refreshToken = randomBytes(48).toString("hex");
+    // 原: 7天 → 临时改为 30 天（开发阶段方便测试，后续还原）
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
     await this.prisma.refreshToken.create({
       data: { token: this.hashToken(refreshToken), userId: user.id, deviceInfo: ip, expiresAt },
@@ -59,7 +60,9 @@ export class AuthService {
   private signAccess(user: { id: string; username: string; isSuperAdmin: boolean }) {
     return jwt.sign(
       { sub: user.id, username: user.username, isSuperAdmin: user.isSuperAdmin },
-      ACCESS_SECRET, { expiresIn: '15m' },
+      ACCESS_SECRET,
+      // 原: expiresIn: '15m' → 临时改为 7 天（开发阶段方便测试，后续还原）
+      { expiresIn: "7d" },
     );
   }
 
