@@ -1,8 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { pipeline, type FeatureExtractionPipeline } from '@xenova/transformers';
+import {
+  pipeline,
+  type FeatureExtractionPipeline,
+  env,
+} from '@xenova/transformers';
 import { Embeddings } from '@langchain/core/embeddings';
+import * as path from 'node:path';
 
 const MODEL_NAME = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
+
+// 指定本地模型目录，禁止联网下载
+env.localModelPath = path.resolve(process.cwd(), 'models');
+env.allowRemoteModels = false;
 
 /**
  * 基于 @xenova/transformers 的本地嵌入服务。
@@ -27,13 +36,13 @@ export class EmbeddingService extends Embeddings {
     // 防止并发调用时多次初始化
     if (!this.initPromise) {
       this.logger.log(`Loading embedding model: ${MODEL_NAME} ...`);
-      this.initPromise = pipeline('feature-extraction', MODEL_NAME).then(
-        (extractor) => {
-          this.logger.log(`Embedding model loaded: ${MODEL_NAME}`);
-          this.extractor = extractor;
-          return extractor;
-        },
-      );
+      this.initPromise = pipeline('feature-extraction', MODEL_NAME, {
+        quantized: false,
+      }).then((extractor) => {
+        this.logger.log(`Embedding model loaded: ${MODEL_NAME}`);
+        this.extractor = extractor;
+        return extractor;
+      });
     }
 
     return this.initPromise;
