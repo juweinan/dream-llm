@@ -6,13 +6,17 @@
     "dev": "nest start --watch",
     "start": "bun run dist/main.js",
     "build": "rm -rf dist tsconfig.tsbuildinfo && nest build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate --schema=prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema=prisma/schema.prisma",
+    "db:studio": "prisma studio --config=prisma.config.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
-    "@prisma/client": "5",
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
@@ -20,7 +24,8 @@
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.2",
     "jsonwebtoken": "^9.0.2",
-    "prisma": "5",
+    "pg": "^8.21.0",
+    "prisma": "^7.8.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
