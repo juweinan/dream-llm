@@ -1,5 +1,5 @@
 import { IsString, IsOptional, IsEnum, MinLength } from 'class-validator';
-import { UserStatus } from '@prisma/client';
+import { UserStatus } from '../../prisma/generated';
 export class UpdateUserDto {
   @IsString() @IsOptional() username?: string;
   @IsString() @MinLength(6) @IsOptional() password?: string;

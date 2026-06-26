@@ -1,5 +1,5 @@
 import { BaseListChatMessageHistory } from '@langchain/core/chat_history';
-import { MessageRole } from '@prisma/client';
+import { MessageRole } from '../prisma/generated';
 import {
   HumanMessage,
   AIMessage,

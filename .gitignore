@@ -3,3 +3,4 @@ node_modules
 **/.turbo
 .claude/
 *.log
+**/src/prisma/generated/

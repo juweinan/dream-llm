@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { MessageRole } from '@prisma/client';
+import { MessageRole } from '../prisma/generated';
 import {
   HumanMessage,
   AIMessage,

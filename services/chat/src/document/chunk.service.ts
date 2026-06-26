@@ -1,14 +1,14 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { TaskStatus } from "@prisma/client";
-import { PrismaService } from "../prisma/prisma.service";
-import { EmbeddingService } from "../llm/embedding/embedding.service";
-import { SseService } from "../sse/sse.service";
-import { extractText } from "./parsers/parser.factory";
+import { Injectable, Logger } from '@nestjs/common';
+import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
+import { TaskStatus } from '../prisma/generated';
+import { PrismaService } from '../prisma/prisma.service';
+import { EmbeddingService } from '../llm/embedding/embedding.service';
+import { SseService } from '../sse/sse.service';
+import { extractText } from './parsers/parser.factory';
 
 const CHUNK_SIZE = 500;
 const CHUNK_OVERLAP = 50;
-const TASK_TYPE = "document_process";
+const TASK_TYPE = 'document_process';
 
 @Injectable()
 export class ChunkService {
@@ -35,23 +35,23 @@ export class ChunkService {
     });
 
     if (!doc || doc.userId !== userId) {
-      throw new Error("文档不存在或无权访问");
+      throw new Error('文档不存在或无权访问');
     }
 
     if (!doc.filePath) {
-      throw new Error("文档没有关联的物理文件");
+      throw new Error('文档没有关联的物理文件');
     }
 
     // 1. 更新状态为 processing + 推送 SSE 事件
     await this.prisma.document.update({
       where: { id: documentId },
-      data: { status: "processing" },
+      data: { status: 'processing' },
     });
     await this.sse.emit(userId, {
       taskId: documentId,
       taskType: TASK_TYPE,
       status: TaskStatus.processing,
-      message: "文档处理中…",
+      message: '文档处理中…',
       metadata: { filename: doc.filename },
     });
 
@@ -78,7 +78,7 @@ export class ChunkService {
       // 6. 逐块写入 document_chunks
       for (let i = 0; i < chunkTexts.length; i++) {
         const content = chunkTexts[i];
-        const vectorStr = `[${embeddings[i].join(",")}]`;
+        const vectorStr = `[${embeddings[i].join(',')}]`;
         const id = crypto.randomUUID();
 
         await this.prisma.$executeRawUnsafe(
@@ -95,7 +95,7 @@ export class ChunkService {
       await this.prisma.document.update({
         where: { id: documentId },
         data: {
-          status: "done",
+          status: 'done',
           chunkCount: chunkTexts.length,
         },
       });
@@ -123,18 +123,20 @@ export class ChunkService {
       await this.prisma.document
         .update({
           where: { id: documentId },
-          data: { status: "error" },
+          data: { status: 'error' },
         })
         .catch(() => {});
 
       // 推送失败事件
-      await this.sse.emit(userId, {
-        taskId: documentId,
-        taskType: TASK_TYPE,
-        status: TaskStatus.error,
-        message: err instanceof Error ? err.message : "处理失败",
-        metadata: { filename: doc.filename },
-      }).catch(() => {});
+      await this.sse
+        .emit(userId, {
+          taskId: documentId,
+          taskType: TASK_TYPE,
+          status: TaskStatus.error,
+          message: err instanceof Error ? err.message : '处理失败',
+          metadata: { filename: doc.filename },
+        })
+        .catch(() => {});
 
       throw err;
     }

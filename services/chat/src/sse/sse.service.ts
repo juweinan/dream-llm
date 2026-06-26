@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import type { Response } from 'express';
-import { TaskStatus } from '@prisma/client';
+import { TaskStatus } from '../prisma/generated';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface TaskEventPayload {
