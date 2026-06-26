@@ -8,6 +8,11 @@
       {
         "include": "../config/**/*.yaml",
         "outDir": "dist/config"
+      },
+      {
+        "include": "prisma/generated/**/*",
+        "outDir": "dist/src",
+        "watchAssets": true
       }
     ]
   }
