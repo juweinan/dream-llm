@@ -9,11 +9,11 @@ interface Props {
 }
 
 export default function SelectionCard({ selection, onAction, disabled }: Props) {
-  function handleSelect(value: string) {
+  function handleSelect(value: string, label: string) {
     if (disabled) return;
     onAction({
       componentType: 'selection',
-      payload: { type: 'select', selectedId: value },
+      payload: { type: 'select', selectedId: value, selectedLabel: label },
     });
   }
 
@@ -29,7 +29,7 @@ export default function SelectionCard({ selection, onAction, disabled }: Props) 
         {selection.options.map((opt) => (
           <button
             key={opt.value}
-            onClick={() => handleSelect(opt.value)}
+            onClick={() => handleSelect(opt.value, opt.label)}
             disabled={disabled}
             className="rounded-md border border-gray-200 px-3 py-2.5 text-left text-sm transition-colors hover:border-blue-400 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
           >

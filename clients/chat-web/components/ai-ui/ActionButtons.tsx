@@ -18,11 +18,11 @@ const styleClass: Record<string, string> = {
 };
 
 export default function ActionButtons({ actions, onAction, disabled }: Props) {
-  function handleClick(action: string) {
+  function handleClick(btnAction: string, label: string) {
     if (disabled) return;
     onAction({
       componentType: 'action_buttons',
-      payload: { type: 'click', action },
+      payload: { type: 'click', action: btnAction, label },
     });
   }
 
@@ -31,7 +31,7 @@ export default function ActionButtons({ actions, onAction, disabled }: Props) {
       {actions.actions.map((btn) => (
         <button
           key={btn.action}
-          onClick={() => handleClick(btn.action)}
+          onClick={() => handleClick(btn.action, btn.label)}
           disabled={disabled}
           className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
             styleClass[btn.style ?? 'default']

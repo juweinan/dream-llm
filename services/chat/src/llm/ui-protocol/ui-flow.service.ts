@@ -101,14 +101,15 @@ export class UIFlowService {
     session.formData = formData;
     this.logger.log(`form_submit → confirm`);
 
-    const keys = Object.keys(formData).join('、');
+    const formDataStr = JSON.stringify(formData, null, 2);
     const response = await this.uiResponse.generateUIResponse(
-      `需求信息已收集完成。请生成以下内容：\n` +
-        `1. 一个 card 组件，展示需求摘要（需求类型: ${session.requirementType}，` +
-        `以及表单中收集到的 ${keys} 等关键字段）\n` +
-        `2. 一个 confirmation 组件，标题为"确认提交需求分析"，` +
-        `摘要说明即将执行的五个分析步骤：需求提取 → 需求澄清 → 需求分析 → 风险评估 → 汇总报告，风险等级为 medium\n` +
-        `3. 一个 steps 组件，展示五个分析步骤，当前第 1 步为 active，其余为 pending`,
+      `需求信息已收集完成。请根据以下真实数据生成确认内容，**禁止编造任何与数据不符的信息**：\n\n` +
+        `需求类型: ${session.requirementType}\n` +
+        `用户提交的表单数据:\n${formDataStr}\n\n` +
+        `请生成：\n` +
+        `1. 一个 card 组件，展示上述表单中的真实数据作为需求摘要\n` +
+        `2. 一个 confirmation 组件，标题为"确认提交需求分析"，摘要中引用上述真实数据\n` +
+        `3. 一个 steps 组件，展示五个分析步骤（需求提取 → 需求澄清 → 需求分析 → 风险评估 → 汇总报告），当前第 1 步为 active，其余为 pending`,
     );
 
     return this.buildResult(session, response);

@@ -110,4 +110,6 @@ export interface ChatMessage {
   text: string;
   components: UIComponent[];
   sessionStage: SessionStage;
+  /** 区分用户手动输入还是点击 UI 触发 */
+  source: 'text' | 'action';
 }
