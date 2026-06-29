@@ -79,6 +79,7 @@
         "@langchain/classic": "^1.0.34",
         "@langchain/core": "^1.1.48",
         "@langchain/deepseek": "^1.0.27",
+        "@langchain/langgraph": "^1.4.7",
         "@langchain/openai": "^1.4.7",
         "@langchain/textsplitters": "^1.0.1",
         "@nestjs/common": "^11.0.1",
@@ -481,15 +482,15 @@
 
     "@langchain/deepseek": ["@langchain/deepseek@1.0.27", "", { "dependencies": { "@langchain/openai": "1.4.7" }, "peerDependencies": { "@langchain/core": "^1.0.0" } }, "sha512-lmj1yPy+noA0ceIzH5jNxJU/uNMGSYlWVwztvkTYC0GExja9sY+21Y9Fpn9WLld5g/AL9/1+3i2aWIQoXOaeGQ=="],
 
-    "@langchain/langgraph": ["@langchain/langgraph@1.3.6", "", { "dependencies": { "@langchain/langgraph-checkpoint": "^1.0.4", "@langchain/langgraph-sdk": "~1.9.17", "@langchain/protocol": "^0.0.16", "@standard-schema/spec": "1.1.0", "uuid": "^14.0.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "zod": "^3.25.32 || ^4.2.0", "zod-to-json-schema": "^3.x" }, "optionalPeers": ["zod-to-json-schema"] }, "sha512-OlpIhaMYs2IlN5hCGUMF9B/jgVacLK5nYbwri1AQatB+CcFIk1xVi9jHcD+fkAtn+7ExFbwiOAAdhuGeWQA9BA=="],
+    "@langchain/langgraph": ["@langchain/langgraph@1.4.7", "", { "dependencies": { "@langchain/langgraph-checkpoint": "^1.1.3", "@langchain/langgraph-sdk": "~1.9.25", "@langchain/protocol": "^0.0.18", "@standard-schema/spec": "1.1.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "zod": "^3.25.32 || ^4.2.0" } }, "sha512-2tcyf3QGC7v89kqSxMCtRvzg/3L/4yHtOaWC49A8KieCciWJs7LGaxHoPB6QRxXyUgyR+Zg9Q1ss/XJIE+JuSQ=="],
 
-    "@langchain/langgraph-checkpoint": ["@langchain/langgraph-checkpoint@1.0.4", "", { "dependencies": { "uuid": "^14.0.0" }, "peerDependencies": { "@langchain/core": "^1.1.44" } }, "sha512-1y5MgZ0gXXrtmoy56e3kaBChI3GwFPIKl27xkrHwN+VE/3iUsyr9gO3Jtp7kdKAe6diZGbcas5bdC/r0yUwTZA=="],
+    "@langchain/langgraph-checkpoint": ["@langchain/langgraph-checkpoint@1.1.3", "", { "peerDependencies": { "@langchain/core": "^1.1.48" } }, "sha512-wgzdQNeEsdw1e+4lvlj0tdq/RYR/k1vPin10g0ymGoehZDDgd9nvIllGXSXN4TFgF9sf5qQP/KTkOcLfeseIhA=="],
 
-    "@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.9.18", "", { "dependencies": { "@langchain/protocol": "^0.0.16", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1", "uuid": "^14.0.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19", "svelte": "^4.0.0 || ^5.0.0", "vue": "^3.0.0" }, "optionalPeers": ["react", "react-dom", "svelte", "vue"] }, "sha512-EQLlop/GLlm52Rii06oZDv1bPvrWARnDuzSY6in4d1gnZX2KSQvxajeZH8GYfMjapDVhbo324DRYJgL9euo2fg=="],
+    "@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.9.25", "", { "dependencies": { "@langchain/protocol": "^0.0.18", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19", "svelte": "^4.0.0 || ^5.0.0", "vue": "^3.0.0" }, "optionalPeers": ["react", "react-dom", "svelte", "vue"] }, "sha512-mRKW8zyQUaHox+HirRFMRrPqOvNbQI3xeXDt6kkk4PbBg77V92bsO1WzUVNrmJ81zCkvxyOrWSK8D6ioCj0a8A=="],
 
     "@langchain/openai": ["@langchain/openai@1.4.7", "", { "dependencies": { "js-tiktoken": "^1.0.12", "openai": "^6.37.0", "zod": "^3.25.76 || ^4" }, "peerDependencies": { "@langchain/core": "^1.1.48" } }, "sha512-i1YLV4pWbGC6W8m0ZNpLObJuf1nyU4o8aWyX4AF9fHn7eM67HfIJWQ5n5XzcCpuSa41otrxA9jvH5XRKwI1qDA=="],
 
-    "@langchain/protocol": ["@langchain/protocol@0.0.16", "", {}, "sha512-ws+J7MaHyhO5dG7f0vdyHQiUn9hoCnki0f3crJPa4MCTGzcRC39jYSCghyrGtBPYQnZbUQiGyRVpW3z3M8IpJg=="],
+    "@langchain/protocol": ["@langchain/protocol@0.0.18", "", {}, "sha512-XW1egQtPfsGI41w2AMZNFZrUIwFSQHTjVMZs0OaTpCAvht/QLoaPN8FQcsysMVypOhupG28J29yOorrc70otBQ=="],
 
     "@langchain/textsplitters": ["@langchain/textsplitters@1.0.1", "", { "dependencies": { "js-tiktoken": "^1.0.12" }, "peerDependencies": { "@langchain/core": "^1.0.0" } }, "sha512-rheJlB01iVtrOUzttscutRgLybPH9qR79EyzBEbf1u97ljWyuxQfCwIWK+SjoQTM9O8M7GGLLRBSYE26Jmcoww=="],
 
@@ -2569,6 +2570,10 @@
 
     "jest-worker/supports-color": ["supports-color@8.1.1", "", { "dependencies": { "has-flag": "^4.0.0" } }, "sha512-MpUEN2OodtUzxvKQl72cUF7RQ5EiHsGvSsVG0ia9c5RbWGL2CI4C7EpPS8UTBIplnlzZiNuV56w+FuNxy3ty2Q=="],
 
+    "langchain/@langchain/langgraph": ["@langchain/langgraph@1.3.6", "", { "dependencies": { "@langchain/langgraph-checkpoint": "^1.0.4", "@langchain/langgraph-sdk": "~1.9.17", "@langchain/protocol": "^0.0.16", "@standard-schema/spec": "1.1.0", "uuid": "^14.0.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "zod": "^3.25.32 || ^4.2.0", "zod-to-json-schema": "^3.x" }, "optionalPeers": ["zod-to-json-schema"] }, "sha512-OlpIhaMYs2IlN5hCGUMF9B/jgVacLK5nYbwri1AQatB+CcFIk1xVi9jHcD+fkAtn+7ExFbwiOAAdhuGeWQA9BA=="],
+
+    "langchain/@langchain/langgraph-checkpoint": ["@langchain/langgraph-checkpoint@1.0.4", "", { "dependencies": { "uuid": "^14.0.0" }, "peerDependencies": { "@langchain/core": "^1.1.44" } }, "sha512-1y5MgZ0gXXrtmoy56e3kaBChI3GwFPIKl27xkrHwN+VE/3iUsyr9gO3Jtp7kdKAe6diZGbcas5bdC/r0yUwTZA=="],
+
     "langchain/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "make-dir/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
@@ -2745,6 +2750,10 @@
 
     "jest-runtime/glob/path-scurry": ["path-scurry@1.11.1", "", { "dependencies": { "lru-cache": "^10.2.0", "minipass": "^5.0.0 || ^6.0.2 || ^7.0.0" } }, "sha512-Xa4Nw17FS9ApQFJ9umLiJS4orGjm7ZzwUrwamcGQuHSzDyth9boKDaycYdDcZDuqYATXw4HFXgaqWTctW/v1HA=="],
 
+    "langchain/@langchain/langgraph/@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.9.18", "", { "dependencies": { "@langchain/protocol": "^0.0.16", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1", "uuid": "^14.0.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19", "svelte": "^4.0.0 || ^5.0.0", "vue": "^3.0.0" }, "optionalPeers": ["react", "react-dom", "svelte", "vue"] }, "sha512-EQLlop/GLlm52Rii06oZDv1bPvrWARnDuzSY6in4d1gnZX2KSQvxajeZH8GYfMjapDVhbo324DRYJgL9euo2fg=="],
+
+    "langchain/@langchain/langgraph/@langchain/protocol": ["@langchain/protocol@0.0.16", "", {}, "sha512-ws+J7MaHyhO5dG7f0vdyHQiUn9hoCnki0f3crJPa4MCTGzcRC39jYSCghyrGtBPYQnZbUQiGyRVpW3z3M8IpJg=="],
+
     "pkg-dir/find-up/locate-path": ["locate-path@5.0.0", "", { "dependencies": { "p-locate": "^4.1.0" } }, "sha512-t7hw9pI+WvuwNJXwk5zVHpyhIqzg2qTlklJOf0mVxGSbe3Fp2VieZcduNYjaLDoy6p9uGpQEGWG87WpMKlNq8g=="],
 
     "prebuild-install/tar-fs/chownr": ["chownr@1.1.4", "", {}, "sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg=="],
@@ -2795,6 +2804,8 @@
 
     "jest-runtime/glob/path-scurry/lru-cache": ["lru-cache@10.4.3", "", {}, "sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ=="],
 
+    "langchain/@langchain/langgraph/@langchain/langgraph-sdk/p-queue": ["p-queue@9.3.0", "", { "dependencies": { "eventemitter3": "^5.0.4", "p-timeout": "^7.0.0" } }, "sha512-7NED7xhQ74Ngp4JP/2e0VZHp7vSWfJfqeiR92jPgxsz6m0Se4P03YoTKa9dDXyZ3r6P616gUXttrB6nnHYKang=="],
+
     "pkg-dir/find-up/locate-path/p-locate": ["p-locate@4.1.0", "", { "dependencies": { "p-limit": "^2.2.0" } }, "sha512-R79ZZ/0wAxKGu3oYMlz8jy/kbhsNrS7SKZ7PxEHBgJ5+F2mtFW2fK2cOtBh1cHYkQsbzFV7I+EoRKe6Yt0oK7A=="],
 
     "prebuild-install/tar-fs/tar-stream/readable-stream": ["readable-stream@3.6.2", "", { "dependencies": { "inherits": "^2.0.3", "string_decoder": "^1.1.1", "util-deprecate": "^1.0.1" } }, "sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA=="],
@@ -2804,6 +2815,10 @@
     "webpack/schema-utils/ajv/json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 
     "@istanbuljs/load-nyc-config/find-up/locate-path/p-locate/p-limit": ["p-limit@2.3.0", "", { "dependencies": { "p-try": "^2.0.0" } }, "sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w=="],
+
+    "langchain/@langchain/langgraph/@langchain/langgraph-sdk/p-queue/eventemitter3": ["eventemitter3@5.0.4", "", {}, "sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw=="],
+
+    "langchain/@langchain/langgraph/@langchain/langgraph-sdk/p-queue/p-timeout": ["p-timeout@7.0.1", "", {}, "sha512-AxTM2wDGORHGEkPCt8yqxOTMgpfbEHqF51f/5fJCmwFC3C/zNcGT63SymH2ttOAaiIws2zVg4+izQCjrakcwHg=="],
 
     "pkg-dir/find-up/locate-path/p-locate/p-limit": ["p-limit@2.3.0", "", { "dependencies": { "p-try": "^2.0.0" } }, "sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w=="],
 
