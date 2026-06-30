@@ -14,12 +14,7 @@ import {
 } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { createChatModel } from '../model.factory';
-import {
-  extractAgent,
-  clarifyAgent,
-  riskAgent,
-  summaryAgent,
-} from '../agents/sub-agents';
+import { extractAgent, clarifyAgent, riskAgent } from '../agents/sub-agents';
 
 // ---------------------------------------------------------------
 // JSON parse helper
@@ -198,6 +193,16 @@ const RequirementAnalysisState = Annotation.Root({
   chatResponse: Annotation<string>,
   // ReAct 子图工具轮次计数
   toolLoopCount: Annotation<number>({
+    reducer: (_prev, next) => next,
+    default: () => 0,
+  }),
+  // Critic-Refine 子图：评审意见（空字符串 = 通过）
+  critique: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
+  // Critic-Refine 子图：修订次数（硬上限 2）
+  reviseCount: Annotation<number>({
     reducer: (_prev, next) => next,
     default: () => 0,
   }),
@@ -612,17 +617,188 @@ async function riskNode(state: State): Promise<Partial<State>> {
   }
 }
 
-/** Node: summary — 汇总报告 */
-async function summaryNode(state: State): Promise<Partial<State>> {
+// ---------------------------------------------------------------
+// Critic-Refine summary subgraph
+// ---------------------------------------------------------------
+
+const ACTOR_SYSTEM_PROMPT = `你是资深需求分析师。根据分析和风险评估生成综合报告。
+
+**报告必需章节**：
+1. 需求摘要：200-300 字概述
+2. 功能分解：主要模块和子功能
+3. 冲突分析：与现有需求的冲突点 + 解决方案
+4. 技术复杂度：评估（低/中/高）+ 理由
+5. 开发排期：各阶段时长 + 依赖项
+
+**格式要求**：
+- 使用 Markdown 标题（## 和 ###）
+- 关键信息用粗体或列表
+- 排期必须标明依赖关系
+- 冲突分析必须包含解决方案，不能只描述问题`;
+
+const CRITIC_SYSTEM_PROMPT = `你是资深需求评审专家。按以下标准检查综合报告：
+
+**评审标准**（必须全部满足）：
+1. 章节完整性：必须包含"需求摘要"、"冲突分析"、"技术复杂度"、"开发排期"
+2. 排期依赖项：排期章节必须标明各阶段的依赖关系（如"前端开发依赖后端 API 完成"）
+3. 冲突解决方案：如果存在冲突，必须给出具体解决方案，不能只描述问题
+4. 逻辑一致性：各章节之间不能有明显矛盾（如摘要说低复杂度，但技术分析提到大规模重构）
+
+**输出要求**：
+- 如果全部满足，返回 pass=true, critique=""
+- 如果任一不满足，返回 pass=false，并给出最关键的 1-2 条修改意见
+- 修改意见要具体，指出缺少什么或哪里矛盾
+- 避免主观性评价（如"语言不够优美"）
+
+**重要**：不要过度严格，只检查核心要素，否则会导致无限循环。`;
+
+const REFINE_SYSTEM_PROMPT = `你是需求分析师。根据评审意见修订报告。
+
+**修订原则**：
+1. 只修改被指出的问题部分
+2. 未被批评的章节保持不变
+3. 补充缺失的章节或内容
+4. 修正逻辑矛盾
+
+**禁止行为**：
+- 不要重新生成整个报告
+- 不要删除正确的内容
+- 不要改变原有的结构和风格`;
+
+/** Critic 结构化输出 schema */
+const CriticOutputSchema = z.object({
+  pass: z.boolean().describe('是否通过评审'),
+  critique: z.string().describe('不通过时的修改意见，通过时为空'),
+  issues: z.array(z.string()).optional().describe('具体问题列表'),
+});
+
+/** actorNode — 生成初版报告 */
+async function actorNode(state: State): Promise<Partial<State>> {
   try {
-    const raw = await summaryAgent.invoke({
-      input: state.input,
-      extracted: JSON.stringify(state.extracted, null, 2),
-      clarification: JSON.stringify(state.clarified, null, 2),
-      analysis: JSON.stringify(state.analysisResult, null, 2),
-      risk: JSON.stringify(state.riskResult, null, 2),
-    });
-    return { summary: raw };
+    const response = await model.invoke([
+      new SystemMessage(ACTOR_SYSTEM_PROMPT),
+      new HumanMessage(
+        `原始需求：${state.input}\n\n提取结果：${JSON.stringify(state.extracted)}\n\n分析结果：${JSON.stringify(state.analysisResult)}\n\n风险评估：${JSON.stringify(state.riskResult)}\n\n请生成完整的综合报告。`,
+      ),
+    ]);
+
+    return {
+      summary:
+        typeof response.content === 'string'
+          ? response.content
+          : JSON.stringify(response.content),
+    };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    return {
+      summary: `# 需求分析报告\n\n## ⚠️ 报告生成失败\n\n错误信息：${errorMsg}\n\n请检查上游节点输出或 LLM 服务状态。`,
+    };
+  }
+}
+
+/** criticNode — 评审检查 */
+async function criticNode(state: State): Promise<Partial<State>> {
+  try {
+    const critic = model.withStructuredOutput(CriticOutputSchema);
+    const result = await critic.invoke([
+      new SystemMessage(CRITIC_SYSTEM_PROMPT),
+      new HumanMessage(`待评审报告：\n\n${state.summary}\n\n请按标准评审。`),
+    ]);
+
+    console.log(
+      `[Critic] pass=${result.pass}, issues=${result.issues?.length ?? 0}`,
+    );
+
+    return { critique: result.pass ? '' : result.critique };
+  } catch (err) {
+    // 评审异常时，critique 写入错误信息而非空字符串。
+    // 这样做有两个效果：
+    //   1. 不会假装"通过评审"——refine 节点会尝试修复
+    //   2. 但如果 refine 也无法修复，至少 critique 里有错误痕迹
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Critic] 评审异常，降级:', errorMsg);
+    return {
+      critique: `⚠️ 评审检查执行失败：${errorMsg}。请人工检查报告质量。`,
+    };
+  }
+}
+
+/** refineNode — 修订改进 */
+async function refineNode(state: State): Promise<Partial<State>> {
+  try {
+    const response = await model.invoke([
+      new SystemMessage(REFINE_SYSTEM_PROMPT),
+      new HumanMessage(
+        `原报告：\n\n${state.summary}\n\n评审意见：\n\n${state.critique}\n\n请根据评审意见修订报告，只改有问题的地方。`,
+      ),
+    ]);
+
+    console.log(`[Refine] reviseCount=${state.reviseCount + 1}`);
+
+    return {
+      summary:
+        typeof response.content === 'string'
+          ? response.content
+          : JSON.stringify(response.content),
+      reviseCount: (state.reviseCount ?? 0) + 1,
+    };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Refine] 修订失败:', errorMsg);
+    // 修订失败时保持原报告不变，仅递增计数防止死循环
+    return { reviseCount: (state.reviseCount ?? 0) + 1 };
+  }
+}
+
+/** shouldRefine — 条件边：决定是修订还是结束 */
+function shouldRefine(state: State): '__end__' | 'refine' {
+  if ((state.reviseCount ?? 0) >= 2) {
+    console.log('[Critic子图] 达到修订上限，强制终止');
+    return '__end__';
+  }
+
+  if (!state.critique || state.critique.trim() === '') {
+    console.log('[Critic子图] 通过评审，完成');
+    return '__end__';
+  }
+
+  console.log('[Critic子图] 未通过评审，进入 refine');
+  return 'refine';
+}
+
+/**
+ * 创建 Critic-Refine 汇总子图
+ *
+ * 图结构：
+ *   START → actor → critic ─(通过)→ END
+ *                       └(不通过)→ refine → critic（回边，最多 2 次）
+ */
+export function createSummarySubGraph() {
+  return new StateGraph(RequirementAnalysisState)
+    .addNode('actor', actorNode)
+    .addNode('critic', criticNode)
+    .addNode('refine', refineNode)
+    .addEdge(START, 'actor')
+    .addEdge('actor', 'critic')
+    .addConditionalEdges('critic', shouldRefine, {
+      __end__: END,
+      refine: 'refine',
+    } as any)
+    .addEdge('refine', 'critic')
+    .compile();
+}
+
+/** Node: summarySubgraph — 调用 Critic-Refine 子图取代原来的 summaryNode */
+async function summarySubgraphNode(state: State): Promise<Partial<State>> {
+  try {
+    const subgraph = createSummarySubGraph();
+    const subResult = await subgraph.invoke(state);
+
+    return {
+      summary: subResult.summary ?? '',
+      critique: subResult.critique ?? '',
+      reviseCount: subResult.reviseCount ?? 0,
+    };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     return {
@@ -712,7 +888,7 @@ export function createAnalysisGraph() {
     .addNode('clarifyStep', clarifyNode)
     .addNode('analysisSubgraph', analysisSubgraphNode as any)
     .addNode('riskStep', riskNode)
-    .addNode('summaryStep', summaryNode)
+    .addNode('summaryStep', summarySubgraphNode)
     .addNode('queryHandler', queryHandlerNode)
     .addNode('chatHandler', chatHandlerNode)
     .addEdge(START, 'classifier')
@@ -750,6 +926,7 @@ export interface GraphOrchestrationResult {
   queryResponse?: string;
   chatResponse?: string;
   toolLoopCount?: number;
+  reviseCount?: number;
 }
 
 /**
@@ -860,6 +1037,7 @@ export async function runAnalysisGraph(
         clarificationQuestions: state.clarified.questions,
         usedAgents,
         toolLoopCount: state.toolLoopCount,
+        reviseCount: state.reviseCount,
         steps: steps.slice(0, 3),
       };
     }
@@ -872,6 +1050,7 @@ export async function runAnalysisGraph(
       steps,
       report: state.summary,
       toolLoopCount: state.toolLoopCount,
+      reviseCount: state.reviseCount,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
