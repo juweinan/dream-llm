@@ -8,7 +8,7 @@ llm:
   # provider: anthropic
   # model: claude-opus-4-7
   temperature: 0
-  maxTokens: 800
+  maxTokens: 4096
 
 retrieval:
   enabled: true
