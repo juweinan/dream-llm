@@ -8,14 +8,14 @@ import {
   Post,
   Req,
   UseGuards,
-} from "@nestjs/common";
-import type { Request } from "express";
-import { AuthGuard } from "../common/guards/auth.guard";
-import { ConversationService } from "./conversation.service";
-import { MessageService } from "../message/message.service";
-import { AdvancedAnalysisService } from "../llm/advanced-analysis.service";
+} from '@nestjs/common';
+import type { Request } from 'express';
+import { AuthGuard } from '../common/guards/auth.guard';
+import { ConversationService } from './conversation.service';
+import { MessageService } from '../message/message.service';
+import { AdvancedAnalysisService } from '../llm/advanced-analysis.service';
 
-@Controller("api/conversations")
+@Controller('api/conversations')
 @UseGuards(AuthGuard)
 export class ConversationController {
   private readonly logger = new Logger(ConversationController.name);
@@ -57,8 +57,8 @@ export class ConversationController {
   /**
    * GET /api/conversations/:id/messages
    */
-  @Get(":id/messages")
-  async getMessages(@Req() req: Request, @Param("id") id: string) {
+  @Get(':id/messages')
+  async getMessages(@Req() req: Request, @Param('id') id: string) {
     const userId = this.getUserId(req);
     await this.conversationService.findById(id, userId);
 
@@ -83,16 +83,16 @@ export class ConversationController {
    *
    * 统一分析入口：历史 + 语义检索 + 多 Agent 编排 → 写 messages 表
    */
-  @Post(":id/chat")
+  @Post(':id/chat')
   async chat(
     @Req() req: Request,
-    @Param("id") id: string,
+    @Param('id') id: string,
     @Body() body: { input: string },
   ) {
     const userId = this.getUserId(req);
     const input = body.input?.trim();
     if (!input) {
-      return { ok: false, error: "input 不能为空" };
+      return { ok: false, error: 'input 不能为空' };
     }
 
     await this.conversationService.findById(id, userId);
@@ -109,10 +109,10 @@ export class ConversationController {
   /**
    * DELETE /api/conversations/:id
    */
-  @Delete(":id")
-  async delete(@Req() req: Request, @Param("id") id: string) {
+  @Delete(':id')
+  async delete(@Req() req: Request, @Param('id') id: string) {
     const userId = this.getUserId(req);
     await this.conversationService.delete(id, userId);
-    return { ok: true, message: "会话已删除" };
+    return { ok: true, message: '会话已删除' };
   }
 }
