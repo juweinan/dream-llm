@@ -1070,3 +1070,199 @@ export async function runAnalysisGraph(
     };
   }
 }
+
+// ---------------------------------------------------------------
+// Streaming run helper — SSE 逐节点推送进度
+// ---------------------------------------------------------------
+
+export interface GraphStreamEvent {
+  type: 'node_started' | 'node_completed' | 'done' | 'error';
+  node?: string;
+  output?: unknown;
+  meta?: Record<string, unknown>;
+  result?: GraphOrchestrationResult;
+  error?: string;
+}
+
+/**
+ * 流式运行需求分析图
+ *
+ * 使用 graph.stream() 逐节点推送进度，通过 async generator 返回 SSE 事件。
+ * 与 runAnalysisGraph 共享同一个图结构，只是把 invoke 替换为 stream。
+ */
+export async function* runAnalysisGraphStream(
+  input: string,
+  retrievedContext?: string,
+): AsyncGenerator<GraphStreamEvent> {
+  const normalizedInput = input.trim();
+  const context = retrievedContext?.trim() ?? '';
+
+  // 输入为空 → 立即返回错误
+  if (!normalizedInput) {
+    yield {
+      type: 'error',
+      error: 'input 不能为空',
+    };
+    return;
+  }
+
+  const graph = createAnalysisGraph();
+
+  // 跟踪已完成的节点，用于判断意图路径
+  const completedNodes: string[] = [];
+  // 累积 state（覆盖型字段取最后一次）
+  let accumulatedState: Record<string, unknown> = {};
+
+  try {
+    const stream = await graph.stream(
+      { input: normalizedInput, retrievedContext: context, messages: [] },
+      // 不传 configurable，每次流式调用都是独立的（与 runAnalysisGraph 一致）
+    );
+
+    for await (const chunk of stream) {
+      // chunk 结构：{ nodeName: Partial<State> }
+      const entries = Object.entries(chunk);
+      for (const [nodeName, nodeOutput] of entries) {
+        completedNodes.push(nodeName);
+        accumulatedState = {
+          ...accumulatedState,
+          ...(nodeOutput as Record<string, unknown>),
+        };
+
+        yield {
+          type: 'node_completed',
+          node: nodeName,
+          output: nodeOutput,
+          meta: {
+            nodesCompleted: completedNodes.length,
+            completedNodes: [...completedNodes],
+          },
+        };
+      }
+    }
+
+    // 图正常结束 → 从累积 state 构造结果
+    const intent = (accumulatedState.intent as string) ?? 'analyze';
+
+    if (intent === 'query') {
+      yield {
+        type: 'done',
+        result: {
+          mode: 'fixed',
+          status: 'completed',
+          intent: 'query',
+          usedAgents: ['classifier', 'queryHandler'],
+          queryResponse: (accumulatedState.queryResponse as string) ?? '',
+          steps: [
+            { agent: 'classifier', status: 'ok', output: { intent } },
+            {
+              agent: 'queryHandler',
+              status: 'ok',
+              output: accumulatedState.queryResponse,
+            },
+          ],
+          report: (accumulatedState.summary as string) ?? '',
+        },
+      };
+      return;
+    }
+
+    if (intent === 'chat') {
+      yield {
+        type: 'done',
+        result: {
+          mode: 'fixed',
+          status: 'completed',
+          intent: 'chat',
+          usedAgents: ['classifier', 'chatHandler'],
+          chatResponse: (accumulatedState.chatResponse as string) ?? '',
+          steps: [
+            { agent: 'classifier', status: 'ok', output: { intent } },
+            {
+              agent: 'chatHandler',
+              status: 'ok',
+              output: accumulatedState.chatResponse,
+            },
+          ],
+          report: (accumulatedState.summary as string) ?? '',
+        },
+      };
+      return;
+    }
+
+    // analyze 路径
+    const usedAgents = [
+      'classifier',
+      'extractStep',
+      'clarifyStep',
+      'analysisSubgraph',
+      'riskStep',
+      'summaryStep',
+    ];
+
+    const steps: GraphOrchestrationStep[] = [
+      { agent: 'classifier', status: 'ok', output: { intent } },
+      {
+        agent: 'extractStep',
+        status: 'ok',
+        output: accumulatedState.extracted,
+      },
+      {
+        agent: 'clarifyStep',
+        status: 'ok',
+        output: accumulatedState.clarified,
+      },
+      {
+        agent: 'analysisSubgraph',
+        status: 'ok',
+        output: accumulatedState.analysisResult,
+      },
+      { agent: 'riskStep', status: 'ok', output: accumulatedState.riskResult },
+      { agent: 'summaryStep', status: 'ok', output: accumulatedState.summary },
+    ];
+
+    const clarified = accumulatedState.clarified as
+      | Record<string, unknown>
+      | undefined;
+    if (
+      clarified?.needsClarification &&
+      Array.isArray(clarified.questions) &&
+      clarified.questions.length > 0
+    ) {
+      yield {
+        type: 'done',
+        result: {
+          mode: 'fixed',
+          status: 'clarification_needed',
+          intent: 'analyze',
+          clarificationQuestions: clarified.questions as string[],
+          usedAgents,
+          toolLoopCount: (accumulatedState.toolLoopCount as number) ?? 0,
+          reviseCount: (accumulatedState.reviseCount as number) ?? 0,
+          steps: steps.slice(0, 3),
+        },
+      };
+      return;
+    }
+
+    yield {
+      type: 'done',
+      result: {
+        mode: 'fixed',
+        status: 'completed',
+        intent: 'analyze',
+        usedAgents,
+        steps,
+        report: (accumulatedState.summary as string) ?? '',
+        toolLoopCount: (accumulatedState.toolLoopCount as number) ?? 0,
+        reviseCount: (accumulatedState.reviseCount as number) ?? 0,
+      },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    yield {
+      type: 'error',
+      error: message,
+    };
+  }
+}

@@ -7,13 +7,15 @@ import {
   Param,
   Post,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { ConversationService } from './conversation.service';
 import { MessageService } from '../message/message.service';
 import { AdvancedAnalysisService } from '../llm/advanced-analysis.service';
+import { runAnalysisGraphStream } from '../llm/graph/requirement-analysis-graph';
 
 @Controller('api/conversations')
 @UseGuards(AuthGuard)
@@ -104,6 +106,74 @@ export class ConversationController {
       conversationId: id,
       ...result,
     };
+  }
+
+  /**
+   * POST /api/conversations/:id/chat/stream
+   * Body: { input: string }
+   *
+   * 流式分析入口：SSE 逐节点推送进度。
+   * 与 POST :id/chat 共享同一个图结构，仅将 invoke 替换为 stream。
+   */
+  @Post(':id/chat/stream')
+  async chatStream(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: { input: string },
+    @Res() res: Response,
+  ) {
+    const userId = this.getUserId(req);
+    const input = body.input?.trim();
+    if (!input) {
+      res.status(400).json({ ok: false, error: 'input 不能为空' });
+      return;
+    }
+
+    // 验证会话所有权
+    try {
+      await this.conversationService.findById(id, userId);
+    } catch {
+      res.status(404).json({ ok: false, error: '会话不存在或无权访问' });
+      return;
+    }
+
+    // 保存用户消息落库
+    await this.messageService.addMessage(id, 'USER', input);
+
+    // 设置 SSE 响应头
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    // 逐节点推送进度
+    for await (const event of runAnalysisGraphStream(input)) {
+      const sseLine = `data: ${JSON.stringify(event)}\n\n`;
+      res.write(sseLine);
+
+      // done 事件时将 ASSISTANT 报告写入 messages 表
+      if (event.type === 'done' && event.result?.report) {
+        await this.messageService.addMessage(
+          id,
+          'ASSISTANT',
+          event.result.report,
+        );
+      } else if (event.type === 'done' && event.result?.queryResponse) {
+        await this.messageService.addMessage(
+          id,
+          'ASSISTANT',
+          event.result.queryResponse,
+        );
+      } else if (event.type === 'done' && event.result?.chatResponse) {
+        await this.messageService.addMessage(
+          id,
+          'ASSISTANT',
+          event.result.chatResponse,
+        );
+      }
+    }
+
+    res.end();
   }
 
   /**
