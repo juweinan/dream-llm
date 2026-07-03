@@ -5,6 +5,7 @@ import {
   END,
   MessagesAnnotation,
   Send,
+  type BaseCheckpointSaver,
 } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { z } from 'zod';
@@ -105,12 +106,14 @@ export function createExpertSubGraph({
   systemPrompt,
   outputField,
   maxToolRounds = 4,
+  checkpointer,
 }: {
   model: BaseChatModel;
   tools: StructuredToolInterface[];
   systemPrompt: string;
   outputField: string;
   maxToolRounds?: number;
+  checkpointer?: BaseCheckpointSaver | boolean;
 }) {
   const agentModel = bindToolsChecked(model, tools);
 
@@ -216,7 +219,7 @@ export function createExpertSubGraph({
     }
   }
 
-  return new StateGraph(ExpertSubgraphState)
+  const graph = new StateGraph(ExpertSubgraphState)
     .addNode('agent', agentNode)
     .addNode('tools', toolsNode)
     .addNode('finalize', finalizeNode)
@@ -226,8 +229,9 @@ export function createExpertSubGraph({
       finalize: 'finalize',
     })
     .addEdge('tools', 'agent')
-    .addEdge('finalize', END)
-    .compile();
+    .addEdge('finalize', END);
+
+  return checkpointer ? graph.compile({ checkpointer }) : graph.compile();
 }
 
 // ===============================================================
@@ -989,6 +993,7 @@ function makeExpertWrapperNode(
 export function createAnalysisSupervisorSubGraph({
   model,
   expertTools = {},
+  checkpointer,
 }: {
   model: BaseChatModel;
   expertTools?: {
@@ -997,6 +1002,7 @@ export function createAnalysisSupervisorSubGraph({
     security?: StructuredToolInterface[];
     compliance?: StructuredToolInterface[];
   };
+  checkpointer?: BaseCheckpointSaver | boolean;
 }) {
   // 创建各专家子图
   const functionalExpertGraph = createExpertSubGraph({
@@ -1005,6 +1011,7 @@ export function createAnalysisSupervisorSubGraph({
     systemPrompt: FUNCTIONAL_EXPERT_SYSTEM_PROMPT,
     outputField: 'functionalAnalysis',
     maxToolRounds: 4,
+    checkpointer,
   });
 
   const performanceExpertGraph = createExpertSubGraph({
@@ -1013,6 +1020,7 @@ export function createAnalysisSupervisorSubGraph({
     systemPrompt: PERFORMANCE_EXPERT_SYSTEM_PROMPT,
     outputField: 'performanceAnalysis',
     maxToolRounds: 3,
+    checkpointer,
   });
 
   const securityExpertGraph = createExpertSubGraph({
@@ -1021,6 +1029,7 @@ export function createAnalysisSupervisorSubGraph({
     systemPrompt: SECURITY_EXPERT_SYSTEM_PROMPT,
     outputField: 'securityAnalysis',
     maxToolRounds: 3,
+    checkpointer,
   });
 
   const complianceExpertGraph = createExpertSubGraph({
@@ -1029,6 +1038,7 @@ export function createAnalysisSupervisorSubGraph({
     systemPrompt: COMPLIANCE_EXPERT_SYSTEM_PROMPT,
     outputField: 'complianceAnalysis',
     maxToolRounds: 3,
+    checkpointer,
   });
 
   // 创建 Supervisor 和 Aggregator 节点
@@ -1058,7 +1068,7 @@ export function createAnalysisSupervisorSubGraph({
   );
 
   // 构建图
-  return new StateGraph(SupervisorSubgraphState)
+  const graph = new StateGraph(SupervisorSubgraphState)
     .addNode('supervisor', supervisorNode)
     .addNode('functional_expert', functionalNode as any)
     .addNode('performance_expert', performanceNode as any)
@@ -1071,6 +1081,7 @@ export function createAnalysisSupervisorSubGraph({
     .addEdge('performance_expert', 'aggregator')
     .addEdge('security_expert', 'aggregator')
     .addEdge('compliance_expert', 'aggregator')
-    .addEdge('aggregator', END)
-    .compile();
+    .addEdge('aggregator', END);
+
+  return checkpointer ? graph.compile({ checkpointer }) : graph.compile();
 }

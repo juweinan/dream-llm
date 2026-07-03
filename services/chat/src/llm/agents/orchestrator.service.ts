@@ -53,15 +53,17 @@ export class OrchestratorService {
    * - 需要澄清时：返回 clarificationQuestions 并终止
    * - 失败时：返回 fallback: 'manual_review'
    *
-   * @param input 用户输入
-   * @param retrievedContext 可选的检索增强上下文（来自语义检索或历史对话）
+   * @param input            用户输入
+   * @param retrievedContext  可选的检索增强上下文（来自语义检索或历史对话）
+   * @param threadId          会话标识（传入相同值可在异常后断点恢复，不传则每次独立运行）
    */
   async orchestrate(
     input: string,
     retrievedContext?: string,
+    threadId?: string,
   ): Promise<OrchestrationResult> {
     this.logger.log('[Graph] 启动需求分析图');
-    const result = await runAnalysisGraph(input, retrievedContext);
+    const result = await runAnalysisGraph(input, retrievedContext, threadId);
     this.logger.log(`[Graph] 完成，状态: ${result.status}`);
     return result;
   }

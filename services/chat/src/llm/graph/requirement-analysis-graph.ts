@@ -4,6 +4,8 @@ import {
   START,
   END,
   MessagesAnnotation,
+  MemorySaver,
+  type BaseCheckpointSaver,
 } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { z } from 'zod';
@@ -248,6 +250,17 @@ type State = typeof RequirementAnalysisState.State;
 // Model instance
 // ---------------------------------------------------------------
 const model = createChatModel();
+
+// ---------------------------------------------------------------
+// Checkpointer — 多专家并行场景断点恢复
+//
+// 使用 MemorySaver 在进程内持久化图状态。生产环境可替换为
+// SqliteSaver 或 PostgresSaver 以支持跨进程恢复。
+//
+// 编译时注入后，Supervisor 子图中 4 个并行 Send 若有任一
+// 超时/异常，恢复时只需重跑未完成的专家，不重复执行已完成的。
+// ---------------------------------------------------------------
+const checkpointer: BaseCheckpointSaver = new MemorySaver();
 
 // ---------------------------------------------------------------
 // Mock tools for ReAct analysis subgraph
@@ -545,7 +558,7 @@ export function createAnalysisSubGraph() {
     .addConditionalEdges('agent', shouldContinueTools)
     .addEdge('tools', 'agent')
     .addEdge('finalize', END)
-    .compile();
+    .compile({ checkpointer });
 }
 
 // ---------------------------------------------------------------
@@ -652,6 +665,7 @@ async function analysisSupervisorNode(state: State): Promise<Partial<State>> {
   try {
     const subgraph = createAnalysisSupervisorSubGraph({
       model,
+      checkpointer,
       // 为各专家配置工具集：
       // - functional 专家使用需求查询、实体查询、约束校验工具
       // - security 专家使用冲突检测工具
@@ -884,7 +898,7 @@ export function createSummarySubGraph() {
       refine: 'refine',
     } as any)
     .addEdge('refine', 'critic')
-    .compile();
+    .compile({ checkpointer });
 }
 
 /** Node: summarySubgraph — 调用 Critic-Refine 子图取代原来的 summaryNode */
@@ -1009,7 +1023,7 @@ export function createAnalysisGraph() {
       .addEdge('summaryStep', END)
       .addEdge('queryHandler', END)
       .addEdge('chatHandler', END)
-      .compile()
+      .compile({ checkpointer })
   );
 }
 
@@ -1044,10 +1058,15 @@ export interface GraphOrchestrationResult {
 
 /**
  * 运行需求分析图
+ *
+ * @param input           用户输入
+ * @param retrievedContext 检索增强上下文
+ * @param threadId        会话标识（传相同值可断点恢复，不传则每次独立运行）
  */
 export async function runAnalysisGraph(
   input: string,
   retrievedContext?: string,
+  threadId?: string,
 ): Promise<GraphOrchestrationResult> {
   const normalizedInput = input.trim();
   const context = retrievedContext?.trim() ?? '';
@@ -1071,11 +1090,16 @@ export async function runAnalysisGraph(
 
   try {
     const graph = createAnalysisGraph();
-    const state = await graph.invoke({
-      input: normalizedInput,
-      retrievedContext: context,
-      messages: [],
-    });
+    const state = await graph.invoke(
+      {
+        input: normalizedInput,
+        retrievedContext: context,
+        messages: [],
+      },
+      // `thread_id` 用于断点恢复：相同 thread_id 的后续调用
+      // 会自动跳过已完成的节点，仅重试未完成的 Send。
+      threadId ? { configurable: { thread_id: threadId } } : undefined,
+    );
 
     const intent = state.intent ?? 'analyze';
 
@@ -1215,6 +1239,7 @@ export interface GraphStreamEvent {
 export async function* runAnalysisGraphStream(
   input: string,
   retrievedContext?: string,
+  threadId?: string,
 ): AsyncGenerator<GraphStreamEvent> {
   const normalizedInput = input.trim();
   const context = retrievedContext?.trim() ?? '';
@@ -1238,7 +1263,7 @@ export async function* runAnalysisGraphStream(
   try {
     const stream = await graph.stream(
       { input: normalizedInput, retrievedContext: context, messages: [] },
-      // 不传 configurable，每次流式调用都是独立的（与 runAnalysisGraph 一致）
+      threadId ? { configurable: { thread_id: threadId } } : undefined,
     );
 
     for await (const chunk of stream) {
