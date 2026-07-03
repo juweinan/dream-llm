@@ -15,6 +15,10 @@ import {
 import { tool } from '@langchain/core/tools';
 import { createChatModel } from '../model.factory';
 import { extractAgent, clarifyAgent, riskAgent } from '../agents/sub-agents';
+import {
+  createAnalysisSupervisorSubGraph,
+  type SupervisorState,
+} from './experts';
 
 // ---------------------------------------------------------------
 // JSON parse helper
@@ -205,6 +209,36 @@ const RequirementAnalysisState = Annotation.Root({
   reviseCount: Annotation<number>({
     reducer: (_prev, next) => next,
     default: () => 0,
+  }),
+  // ===============================================================
+  // 第 9 章 Supervisor + 多专家架构 新增字段
+  // ===============================================================
+  // Supervisor 决策：当前激活的专家列表
+  activeExperts: Annotation<string[]>({
+    reducer: (_prev, next) => next,
+    default: () => [],
+  }),
+  // Supervisor 决策理由（调试 & 审计用）
+  supervisorReasoning: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
+  // 各专家独立输出
+  functionalAnalysis: Annotation<Record<string, unknown>>({
+    reducer: (_prev, next) => next,
+    default: () => ({}),
+  }),
+  performanceAnalysis: Annotation<Record<string, unknown>>({
+    reducer: (_prev, next) => next,
+    default: () => ({}),
+  }),
+  securityAnalysis: Annotation<Record<string, unknown>>({
+    reducer: (_prev, next) => next,
+    default: () => ({}),
+  }),
+  complianceAnalysis: Annotation<Record<string, unknown>>({
+    reducer: (_prev, next) => next,
+    default: () => ({}),
   }),
 });
 
@@ -568,11 +602,15 @@ async function clarifyNode(state: State): Promise<Partial<State>> {
 }
 
 /**
- * Node: analysisSubgraph — 调用 ReAct 子图进行多维度需求分析
+ * Node: analysisSubgraph — 调用 ReAct 子图进行多维度需求分析（第 8 章实现）
  *
  * 替代原来的 analysisNode，将主图 state 映射到子图 state，
  * 子图内 agent → tools → agent → ... → finalize 循环执行，
  * 最后将子图的 analysisResult 写回主图 State。
+ *
+ * ⚠️ 保留用于对比测试，第 9 章默认使用 analysisSupervisorNode。
+ *     如需回退到单 Agent 模式，在 createAnalysisGraph 中将
+ *     'analysisSupervisor' 替换为 'analysisSubgraph'。
  */
 async function analysisSubgraphNode(state: State): Promise<Partial<State>> {
   try {
@@ -587,6 +625,67 @@ async function analysisSubgraphNode(state: State): Promise<Partial<State>> {
 
     return {
       analysisResult: subResult.analysisResult ?? ANALYSIS_FALLBACK,
+      toolLoopCount: subResult.toolLoopCount ?? 0,
+    };
+  } catch (err) {
+    return {
+      analysisResult: {
+        ...ANALYSIS_FALLBACK,
+        _error: err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
+}
+
+/**
+ * Node: analysisSupervisor — 调用 Supervisor + 多专家子图（第 9 章实现）
+ *
+ * 替代 analysisSubgraphNode，将主图 state 映射到 Supervisor 子图 state，
+ * 子图内 supervisor → [并行专家] → aggregator 执行，
+ * 最后将子图的 analysisResult 及专家中间输出写回主图 State。
+ *
+ * 与 analysisSubgraphNode 的对比：
+ *   - 第 8 章：单 Agent ReAct 循环（agent ⇄ tools → finalize）
+ *   - 第 9 章：Supervisor 决策 → 多专家并行分析 → Aggregator 合并
+ */
+async function analysisSupervisorNode(state: State): Promise<Partial<State>> {
+  try {
+    const subgraph = createAnalysisSupervisorSubGraph({
+      model,
+      // 为各专家配置工具集：
+      // - functional 专家使用需求查询、实体查询、约束校验工具
+      // - security 专家使用冲突检测工具
+      // - performance / compliance 专家使用文件读取工具查阅规范
+      expertTools: {
+        functional: analysisTools,
+        performance: [], // 可扩展：readFileTool 等
+        security: [checkConflicts],
+        compliance: [], // 可扩展：readFileTool 等
+      },
+    });
+
+    const subResult = await subgraph.invoke({
+      input: state.input,
+      extracted: state.extracted ?? {},
+      clarified: state.clarified ?? {},
+      activeExperts: [],
+      functionalAnalysis: {},
+      performanceAnalysis: {},
+      securityAnalysis: {},
+      complianceAnalysis: {},
+      analysisResult: {},
+      toolLoopCount: 0,
+    });
+
+    // 将子图的专家输出和最终结果写回主图 State
+    return {
+      analysisResult: subResult.analysisResult ?? ANALYSIS_FALLBACK,
+      activeExperts: subResult.activeExperts ?? [],
+      supervisorReasoning: subResult.supervisorReasoning ?? '',
+      functionalAnalysis: subResult.functionalAnalysis ?? {},
+      performanceAnalysis: subResult.performanceAnalysis ?? {},
+      securityAnalysis: subResult.securityAnalysis ?? {},
+      complianceAnalysis: subResult.complianceAnalysis ?? {},
       toolLoopCount: subResult.toolLoopCount ?? 0,
     };
   } catch (err) {
@@ -872,35 +971,46 @@ function routeByIntent(
 /**
  * 创建编译后的需求分析图
  *
- * 图结构：
+ * 图结构（第 9 章）：
  *   START → classifier
- *            ├─ analyze → extract → clarify → analysisSubgraph(ReAct) → risk → summary → END
+ *            ├─ analyze → extract → clarify → analysisSupervisor(Supervisor+多专家) → risk → summary → END
  *            ├─ query   → queryHandler → END
  *            └─ chat    → chatHandler  → END
  *
- * 其中 analysisSubgraph 内部是 ReAct 循环：
- *   agent ⇄ tools → finalize
+ * 其中 analysisSupervisor 内部是 Supervisor + 多专家架构：
+ *   supervisor → [functional | performance | security | compliance] → aggregator
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * 如何切换回第 8 章单 Agent ReAct 模式：
+ *   1. 将下方 'analysisSupervisor' 替换为 'analysisSubgraph'
+ *   2. 将 analysisSupervisorNode 替换为 analysisSubgraphNode
+ * ═══════════════════════════════════════════════════════════════════
  */
 export function createAnalysisGraph() {
-  return new StateGraph(RequirementAnalysisState)
-    .addNode('classifier', classifierNode)
-    .addNode('extractStep', extractNode)
-    .addNode('clarifyStep', clarifyNode)
-    .addNode('analysisSubgraph', analysisSubgraphNode as any)
-    .addNode('riskStep', riskNode)
-    .addNode('summaryStep', summarySubgraphNode)
-    .addNode('queryHandler', queryHandlerNode)
-    .addNode('chatHandler', chatHandlerNode)
-    .addEdge(START, 'classifier')
-    .addConditionalEdges('classifier', routeByIntent)
-    .addEdge('extractStep', 'clarifyStep')
-    .addEdge('clarifyStep', 'analysisSubgraph')
-    .addEdge('analysisSubgraph', 'riskStep')
-    .addEdge('riskStep', 'summaryStep')
-    .addEdge('summaryStep', END)
-    .addEdge('queryHandler', END)
-    .addEdge('chatHandler', END)
-    .compile();
+  return (
+    new StateGraph(RequirementAnalysisState)
+      .addNode('classifier', classifierNode)
+      .addNode('extractStep', extractNode)
+      .addNode('clarifyStep', clarifyNode)
+      // 第 9 章：Supervisor + 多专家架构（默认）
+      // 如需回退第 8 章单 Agent 模式，替换为：
+      // .addNode('analysisSubgraph', analysisSubgraphNode as any)
+      .addNode('analysisSupervisor', analysisSupervisorNode as any)
+      .addNode('riskStep', riskNode)
+      .addNode('summaryStep', summarySubgraphNode)
+      .addNode('queryHandler', queryHandlerNode)
+      .addNode('chatHandler', chatHandlerNode)
+      .addEdge(START, 'classifier')
+      .addConditionalEdges('classifier', routeByIntent)
+      .addEdge('extractStep', 'clarifyStep')
+      .addEdge('clarifyStep', 'analysisSupervisor')
+      .addEdge('analysisSupervisor', 'riskStep')
+      .addEdge('riskStep', 'summaryStep')
+      .addEdge('summaryStep', END)
+      .addEdge('queryHandler', END)
+      .addEdge('chatHandler', END)
+      .compile()
+  );
 }
 
 // ---------------------------------------------------------------
@@ -927,6 +1037,9 @@ export interface GraphOrchestrationResult {
   chatResponse?: string;
   toolLoopCount?: number;
   reviseCount?: number;
+  // 第 9 章 Supervisor + 多专家架构新增字段
+  activeExperts?: string[];
+  supervisorReasoning?: string;
 }
 
 /**
@@ -1008,7 +1121,8 @@ export async function runAnalysisGraph(
       'classifier',
       'extractStep',
       'clarifyStep',
-      'analysisSubgraph',
+      // 第 9 章：analysisSupervisor 替代 analysisSubgraph
+      'analysisSupervisor',
       'riskStep',
       'summaryStep',
     ];
@@ -1018,9 +1132,14 @@ export async function runAnalysisGraph(
       { agent: 'extractStep', status: 'ok', output: state.extracted },
       { agent: 'clarifyStep', status: 'ok', output: state.clarified },
       {
-        agent: 'analysisSubgraph',
+        // 第 9 章：输出中包含 Supervisor 决策信息
+        agent: 'analysisSupervisor',
         status: 'ok',
-        output: state.analysisResult,
+        output: {
+          analysisResult: state.analysisResult,
+          activeExperts: state.activeExperts,
+          supervisorReasoning: state.supervisorReasoning,
+        },
       },
       { agent: 'riskStep', status: 'ok', output: state.riskResult },
       { agent: 'summaryStep', status: 'ok', output: state.summary },
@@ -1051,6 +1170,9 @@ export async function runAnalysisGraph(
       report: state.summary,
       toolLoopCount: state.toolLoopCount,
       reviseCount: state.reviseCount,
+      // 第 9 章：Supervisor 决策信息
+      activeExperts: state.activeExperts,
+      supervisorReasoning: state.supervisorReasoning,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1195,7 +1317,8 @@ export async function* runAnalysisGraphStream(
       'classifier',
       'extractStep',
       'clarifyStep',
-      'analysisSubgraph',
+      // 第 9 章：analysisSupervisor 替代 analysisSubgraph
+      'analysisSupervisor',
       'riskStep',
       'summaryStep',
     ];
@@ -1213,9 +1336,14 @@ export async function* runAnalysisGraphStream(
         output: accumulatedState.clarified,
       },
       {
-        agent: 'analysisSubgraph',
+        // 第 9 章：输出中包含 Supervisor 决策信息
+        agent: 'analysisSupervisor',
         status: 'ok',
-        output: accumulatedState.analysisResult,
+        output: {
+          analysisResult: accumulatedState.analysisResult,
+          activeExperts: accumulatedState.activeExperts,
+          supervisorReasoning: accumulatedState.supervisorReasoning,
+        },
       },
       { agent: 'riskStep', status: 'ok', output: accumulatedState.riskResult },
       { agent: 'summaryStep', status: 'ok', output: accumulatedState.summary },
@@ -1256,6 +1384,10 @@ export async function* runAnalysisGraphStream(
         report: (accumulatedState.summary as string) ?? '',
         toolLoopCount: (accumulatedState.toolLoopCount as number) ?? 0,
         reviseCount: (accumulatedState.reviseCount as number) ?? 0,
+        // 第 9 章：Supervisor 决策信息
+        activeExperts: (accumulatedState.activeExperts as string[]) ?? [],
+        supervisorReasoning:
+          (accumulatedState.supervisorReasoning as string) ?? '',
       },
     };
   } catch (err) {
