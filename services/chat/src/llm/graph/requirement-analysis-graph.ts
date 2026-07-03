@@ -92,6 +92,88 @@ const IntentSchema = z.object({
 
 type ClassifiedIntent = z.infer<typeof IntentSchema>;
 
+// ---------------------------------------------------------------
+// 第 9.4 节：Handoff 分诊 — triageSchema + keyword fallback
+// ---------------------------------------------------------------
+
+/** Handoff 分诊的 Zod schema */
+const TriageSchema = z.object({
+  /**
+   * 分诊动作：
+   * - answer:             直接回复用户（闲聊、问候、概念性问题）
+   * - handoff_to_analysis: 交接给需求分析管线
+   * - handoff_to_risk:     交接给风险评估管线（仅评估风险，不做完整分析）
+   */
+  action: z
+    .enum(['answer', 'handoff_to_analysis', 'handoff_to_risk'])
+    .describe(
+      '分诊决策：answer=直接回复, handoff_to_analysis=交接给分析管线, handoff_to_risk=交接给风险评估',
+    ),
+
+  /**
+   * 当 action='answer' 时的直接回复内容。
+   * 用于在不启动完整管线的情况下立即响应用户。
+   */
+  response: z
+    .string()
+    .optional()
+    .describe("action='answer' 时给用户的回复文本"),
+
+  /**
+   * 交接理由：为什么做出这个分诊决策。
+   * 可选但建议填写，用于调试和审计。
+   */
+  reason: z.string().optional().describe('交接决策的简要理由'),
+});
+
+type TriageDecision = z.infer<typeof TriageSchema>;
+
+/** Handoff → intent 映射 */
+const HANDOFF_TO_INTENT: Record<TriageDecision['action'], string> = {
+  answer: 'chat',
+  handoff_to_analysis: 'analyze',
+  handoff_to_risk: 'risk_only',
+};
+
+/** Handoff 分诊的 system prompt */
+const TRIAGE_SYSTEM_PROMPT = `你是一个需求分诊助手（Triage）。你的任务是根据用户输入，决定如何处理请求。
+
+## 三种动作
+
+### 1. answer — 直接回复
+用户不需要需求分析或风险评估，可以直接答复。
+**触发条件**：
+- 问候语（"你好"、"早上好"）
+- 感谢或告别（"谢谢"、"再见"）
+- 概念性提问（"什么是需求分析？"、"你能做什么？"）
+- 闲聊话题
+- 任何不包含功能描述、不涉及现有需求编号的对话
+
+### 2. handoff_to_analysis — 交接给需求分析管线
+用户提出了需要结构化分析的需求。
+**触发条件**：
+- 描述了一个待实现的功能或系统
+- 包含约束条件、业务场景等需求要素
+- 明确请求"分析"、"拆解"、"评审"
+- 涉及需求编号（如 REQ-XXX）且包含功能描述
+
+### 3. handoff_to_risk — 交接给风险评估管线
+用户只需要风险评估，不需要完整的功能分析。
+**触发条件**：
+- 明确只问"有什么风险"、"安不安全"、"会不会出问题"
+- 询问某个现有需求的潜在风险
+- 关注安全、合规、技术债务等风险维度
+
+## 优先级规则
+1. 明显的闲聊/问候 → **answer**
+2. 明确只问风险 → **handoff_to_risk**
+3. 包含功能描述或分析请求 → **handoff_to_analysis**
+4. 无法判断时，偏向 **handoff_to_analysis**（宁可多分析，不要漏掉）
+
+## 输出要求
+- action='answer' 时，**必须**提供 response 字段，给出友好的回复
+- action='handoff_to_*' 时，提供 reason 字段简要说明交接理由`;
+
 /** 系统提示词：意图分类规则 */
 const CLASSIFIER_SYSTEM_PROMPT = `你是一个需求意图分类器。分析用户输入，判断其属于以下三类之一：
 
@@ -179,7 +261,7 @@ const RequirementAnalysisState = Annotation.Root({
   input: Annotation<string>,
   retrievedContext: Annotation<string>,
   // 意图分类
-  intent: Annotation<'analyze' | 'query' | 'chat'>({
+  intent: Annotation<'analyze' | 'risk_only' | 'query' | 'chat'>({
     reducer: (_prev, next) => next,
     default: () => 'analyze',
   }),
@@ -211,6 +293,14 @@ const RequirementAnalysisState = Annotation.Root({
   reviseCount: Annotation<number>({
     reducer: (_prev, next) => next,
     default: () => 0,
+  }),
+  // ===============================================================
+  // 第 9.4 节 Handoff 分诊 新增字段
+  // ===============================================================
+  // handoff 交接理由（用于调试 & 审计，triaged/passed 后清空）
+  handoffReason: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
   }),
   // ===============================================================
   // 第 9 章 Supervisor + 多专家架构 新增字段
@@ -565,7 +655,7 @@ export function createAnalysisSubGraph() {
 // Main graph nodes
 // ---------------------------------------------------------------
 
-/** Node: classifier — 意图分类 */
+/** Node: classifier — 意图分类 (第 8 章实现) */
 async function classifierNode(state: State): Promise<Partial<State>> {
   try {
     const classifier = model.withStructuredOutput(IntentSchema);
@@ -578,6 +668,148 @@ async function classifierNode(state: State): Promise<Partial<State>> {
   } catch {
     const fallback = classifyByKeywords(state.input);
     return { intent: fallback.intent };
+  }
+}
+
+// ---------------------------------------------------------------
+// 第 9.4 节：Handoff 分诊 Node
+// ---------------------------------------------------------------
+
+/**
+ * Keyword-based triage fallback — 模型不可用时的降级策略
+ *
+ * 规则优先级：
+ *   1. 问候/感谢/告别 + 无需求编号 → answer
+ *   2. 需求编号 + 查询/风险关键词 → handoff_to_risk
+ *   3. 需求编号 + 功能描述 → handoff_to_analysis
+ *   4. 明确功能描述 / 分析请求 → handoff_to_analysis
+ *   5. 默认 → handoff_to_analysis (同上章"宁可多分析")
+ */
+function triageByKeywords(input: string): TriageDecision {
+  const trimmed = input.trim();
+
+  // 规则 1：问候/告别 → 直接回复
+  if (
+    /^(你好|早上好|下午好|晚上好|嗨\b|谢谢|感谢|再见|拜拜|晚安|hello|hi\b)/i.test(
+      trimmed,
+    ) &&
+    !REQ_ID_RE.test(trimmed)
+  ) {
+    return {
+      action: 'answer',
+      response: '你好！有什么需求需要我帮你分析吗？',
+      reason: '关键词兜底：问候/感谢/告别语',
+    };
+  }
+
+  // 规则 2：需求编号 + 风险相关查询 → handoff_to_risk
+  if (REQ_ID_RE.test(trimmed)) {
+    const riskIndicators = /风险|安全|漏洞|隐患|问题/;
+    const queryIndicators = /查询|查看|状态|进度|情况|进展|详情/;
+
+    if (riskIndicators.test(trimmed) && !/分析|拆解|评审|评估/.test(trimmed)) {
+      return {
+        action: 'handoff_to_risk',
+        reason: '关键词兜底：需求编号 + 风险关注',
+      };
+    }
+
+    if (queryIndicators.test(trimmed)) {
+      return {
+        action: 'handoff_to_risk',
+        reason: '关键词兜底：需求编号 + 查询指示词',
+      };
+    }
+  }
+
+  // 规则 3 & 4 & 5：默认 → 需求分析
+  return {
+    action: 'handoff_to_analysis',
+    reason: '关键词兜底：默认为需求分析',
+  };
+}
+
+/**
+ * triageNode — Handoff 分诊节点
+ *
+ * 使用 model.withStructuredOutput(TriageSchema) 判断用户意图：
+ * - answer              → 直接回复，不进入管线
+ * - handoff_to_analysis → 进入需求分析管线 (extract → clarify → analysis → risk → summary)
+ * - handoff_to_risk     → 仅进入风险评估管线 (risk → summary)
+ *
+ * 与 classifierNode 的区别：
+ * - classifier 只做分类（3-way：analyze / query / chat）
+ * - triageNode 可以做 Handoff + 直接答复，语义更丰富
+ * - triageNode 将 action 映射回 intent 字段，对下游节点完全透明
+ *
+ * 在主图中替换 classifier：
+ *
+ *   // 替换前 (第 8 章)
+ *   .addNode('classifier', classifierNode)
+ *   .addConditionalEdges('classifier', routeByIntent)
+ *
+ *   // 替换后 (第 9.4 节 Handoff)
+ *   .addNode('triage', triageNode)
+ *   .addConditionalEdges('triage', routeByIntent)
+ */
+export async function triageNode(state: State): Promise<Partial<State>> {
+  try {
+    const triageModel = model.withStructuredOutput(TriageSchema);
+    const result: TriageDecision = await triageModel.invoke([
+      new SystemMessage(TRIAGE_SYSTEM_PROMPT),
+      new HumanMessage(state.input),
+    ]);
+
+    const intent = HANDOFF_TO_INTENT[result.action];
+
+    // action='answer' 时：将 LLM 的 response 填入 chatResponse，
+    // 同时设置 summary 以便图直接走到 END
+    if (result.action === 'answer') {
+      return {
+        intent: intent as 'chat',
+        chatResponse: result.response ?? '你好！有什么可以帮你的？',
+        handoffReason: result.reason ?? '',
+        // 构造一条 AIMessage 写入 messages，便于调试 & 审计
+        messages: [
+          new AIMessage({
+            content: `[Triage: answer] ${result.reason ?? ''}`,
+          }),
+        ],
+      };
+    }
+
+    // handoff_to_analysis / handoff_to_risk：写入 intent 和交接理由
+    return {
+      intent: intent as 'analyze',
+      handoffReason: result.reason ?? '',
+      messages: [
+        new AIMessage({
+          content: `[Triage: ${result.action}] ${result.reason ?? ''}`,
+        }),
+      ],
+    };
+  } catch (err) {
+    // 模型调用失败 → keyword 降级
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Triage] 分诊失败，降级为关键词兜底:', errorMsg);
+
+    const fallback = triageByKeywords(state.input);
+
+    if (fallback.action === 'answer') {
+      return {
+        intent: 'chat' as const,
+        chatResponse: fallback.response,
+        handoffReason: `降级: ${fallback.reason} (原错误: ${errorMsg})`,
+      };
+    }
+
+    return {
+      intent:
+        fallback.action === 'handoff_to_risk'
+          ? ('risk_only' as const)
+          : ('analyze' as const),
+      handoffReason: `降级: ${fallback.reason} (原错误: ${errorMsg})`,
+    };
   }
 }
 
@@ -970,11 +1202,25 @@ async function chatHandlerNode(state: State): Promise<Partial<State>> {
 // Conditional routing
 // ---------------------------------------------------------------
 
+/**
+ * 根据 intent 路由到下一个节点。
+ *
+ * 路由说明：
+ * - analyze           → extractStep  (完整管线：抽取→澄清→分析→风险→汇总)
+ * - risk_only (Handoff)→ riskStep     (仅风险评估：跳过抽取/澄清/分析)
+ * - query              → queryHandler (需求查询)
+ * - chat / answer      → END          (triageNode 已生成 chatResponse，直接结束)
+ *
+ * Handoff 模式下，chat 直接到 END 而非 chatHandler，
+ * 因为 triageNode action='answer' 时已经在 chatResponse 中写入了回复。
+ */
 function routeByIntent(
   state: State,
-): 'extractStep' | 'queryHandler' | 'chatHandler' {
+): 'extractStep' | 'riskStep' | 'queryHandler' | typeof END {
+  if (state.intent === 'risk_only') return 'riskStep';
   if (state.intent === 'query') return 'queryHandler';
-  if (state.intent === 'chat') return 'chatHandler';
+  // triage 已生成回复 → 直接结束，不进入 chatHandler 再调一次 LLM
+  if (state.intent === 'chat') return END;
   return 'extractStep';
 }
 
@@ -985,43 +1231,57 @@ function routeByIntent(
 /**
  * 创建编译后的需求分析图
  *
- * 图结构（第 9 章）：
- *   START → classifier
- *            ├─ analyze → extract → clarify → analysisSupervisor(Supervisor+多专家) → risk → summary → END
- *            ├─ query   → queryHandler → END
- *            └─ chat    → chatHandler  → END
+ * 图结构（第 9.4 节 Handoff 分诊）：
+ *   START → triage
+ *            ├─ analyze   → extract → clarify → analysisSupervisor → risk → summary → END
+ *            ├─ risk_only → risk → summary → END
+ *            ├─ query     → queryHandler → END
+ *            └─ chat      → END  (triageNode 已生成 chatResponse，直接结束)
  *
  * 其中 analysisSupervisor 内部是 Supervisor + 多专家架构：
  *   supervisor → [functional | performance | security | compliance] → aggregator
  *
  * ═══════════════════════════════════════════════════════════════════
- * 如何切换回第 8 章单 Agent ReAct 模式：
- *   1. 将下方 'analysisSupervisor' 替换为 'analysisSubgraph'
- *   2. 将 analysisSupervisorNode 替换为 analysisSubgraphNode
+ * 切换选项：
+ *   - 回退第 8 章 classifier：'triage' → 'classifier'
+ *     且需要将 routeByIntent 中 chat → END 改回 chat → 'chatHandler'
+ *     以及将 START/条件边改为 .addEdge(START, 'classifier')
+ *                          .addConditionalEdges('classifier', routeByIntent)
+ *   - 回退第 8 章单 Agent ReAct：'analysisSupervisor' → 'analysisSubgraph'
  * ═══════════════════════════════════════════════════════════════════
  */
 export function createAnalysisGraph() {
   return (
     new StateGraph(RequirementAnalysisState)
-      .addNode('classifier', classifierNode)
+      // 第 9.4 节：Handoff 分诊（默认）
+      .addNode('triage', triageNode)
+      // 回退第 8 章：.addNode('classifier', classifierNode)
       .addNode('extractStep', extractNode)
       .addNode('clarifyStep', clarifyNode)
       // 第 9 章：Supervisor + 多专家架构（默认）
-      // 如需回退第 8 章单 Agent 模式，替换为：
-      // .addNode('analysisSubgraph', analysisSubgraphNode as any)
       .addNode('analysisSupervisor', analysisSupervisorNode as any)
       .addNode('riskStep', riskNode)
       .addNode('summaryStep', summarySubgraphNode)
       .addNode('queryHandler', queryHandlerNode)
+      // chatHandler 仅在回退 classifier 模式时使用，
+      // triage 模式下 chat → END，不经过此节点
       .addNode('chatHandler', chatHandlerNode)
-      .addEdge(START, 'classifier')
-      .addConditionalEdges('classifier', routeByIntent)
+      .addEdge(START, 'triage')
+      // 显式路由表：triageNode 返回 END 时需映射到 END
+      .addConditionalEdges('triage', routeByIntent, {
+        extractStep: 'extractStep',
+        riskStep: 'riskStep',
+        queryHandler: 'queryHandler',
+        // Handle the END sentinel value from routeByIntent
+        [END]: END,
+      } as any)
       .addEdge('extractStep', 'clarifyStep')
       .addEdge('clarifyStep', 'analysisSupervisor')
       .addEdge('analysisSupervisor', 'riskStep')
       .addEdge('riskStep', 'summaryStep')
       .addEdge('summaryStep', END)
       .addEdge('queryHandler', END)
+      // chatHandler 仅在回退 classifier 时才会被路由到
       .addEdge('chatHandler', END)
       .compile({ checkpointer })
   );
@@ -1046,7 +1306,7 @@ export interface GraphOrchestrationResult {
   fallback?: 'manual_review';
   steps: GraphOrchestrationStep[];
   report?: string;
-  intent?: 'analyze' | 'query' | 'chat';
+  intent?: 'analyze' | 'risk_only' | 'query' | 'chat';
   queryResponse?: string;
   chatResponse?: string;
   toolLoopCount?: number;
@@ -1054,6 +1314,8 @@ export interface GraphOrchestrationResult {
   // 第 9 章 Supervisor + 多专家架构新增字段
   activeExperts?: string[];
   supervisorReasoning?: string;
+  // 第 9.4 节 Handoff 分诊
+  handoffReason?: string;
 }
 
 /**
@@ -1108,10 +1370,10 @@ export async function runAnalysisGraph(
         mode: 'fixed',
         status: 'completed',
         intent: 'query',
-        usedAgents: ['classifier', 'queryHandler'],
+        usedAgents: ['triage', 'queryHandler'],
         queryResponse: state.queryResponse,
         steps: [
-          { agent: 'classifier', status: 'ok', output: { intent } },
+          { agent: 'triage', status: 'ok', output: { intent } },
           {
             agent: 'queryHandler',
             status: 'ok',
@@ -1127,32 +1389,56 @@ export async function runAnalysisGraph(
         mode: 'fixed',
         status: 'completed',
         intent: 'chat',
-        usedAgents: ['classifier', 'chatHandler'],
+        // triage 模式下 chat 直接到 END，回复由 triageNode 一步生成
+        usedAgents: ['triage'],
         chatResponse: state.chatResponse,
         steps: [
-          { agent: 'classifier', status: 'ok', output: { intent } },
           {
-            agent: 'chatHandler',
+            agent: 'triage',
             status: 'ok',
-            output: state.chatResponse,
+            output: { intent, response: state.chatResponse },
           },
         ],
         report: state.summary,
       };
     }
 
+    // Handoff: risk_only 路径 → 只做风险评估，跳过抽取/澄清/分析
+    if (intent === 'risk_only') {
+      const usedAgents = ['triage', 'riskStep', 'summaryStep'];
+      const steps: GraphOrchestrationStep[] = [
+        {
+          agent: 'triage',
+          status: 'ok',
+          output: { intent, handoffReason: state.handoffReason },
+        },
+        { agent: 'riskStep', status: 'ok', output: state.riskResult },
+        { agent: 'summaryStep', status: 'ok', output: state.summary },
+      ];
+      return {
+        mode: 'fixed',
+        status: 'completed',
+        intent: 'risk_only',
+        usedAgents,
+        steps,
+        report: state.summary,
+        toolLoopCount: state.toolLoopCount,
+        reviseCount: state.reviseCount,
+        handoffReason: state.handoffReason,
+      };
+    }
+
     const usedAgents = [
-      'classifier',
+      'triage',
       'extractStep',
       'clarifyStep',
-      // 第 9 章：analysisSupervisor 替代 analysisSubgraph
       'analysisSupervisor',
       'riskStep',
       'summaryStep',
     ];
 
     const steps: GraphOrchestrationStep[] = [
-      { agent: 'classifier', status: 'ok', output: { intent } },
+      { agent: 'triage', status: 'ok', output: { intent } },
       { agent: 'extractStep', status: 'ok', output: state.extracted },
       { agent: 'clarifyStep', status: 'ok', output: state.clarified },
       {
@@ -1298,10 +1584,10 @@ export async function* runAnalysisGraphStream(
           mode: 'fixed',
           status: 'completed',
           intent: 'query',
-          usedAgents: ['classifier', 'queryHandler'],
+          usedAgents: ['triage', 'queryHandler'],
           queryResponse: (accumulatedState.queryResponse as string) ?? '',
           steps: [
-            { agent: 'classifier', status: 'ok', output: { intent } },
+            { agent: 'triage', status: 'ok', output: { intent } },
             {
               agent: 'queryHandler',
               status: 'ok',
@@ -1321,14 +1607,17 @@ export async function* runAnalysisGraphStream(
           mode: 'fixed',
           status: 'completed',
           intent: 'chat',
-          usedAgents: ['classifier', 'chatHandler'],
+          // triage 模式下 chat 直接到 END，回复由 triageNode 一步生成
+          usedAgents: ['triage'],
           chatResponse: (accumulatedState.chatResponse as string) ?? '',
           steps: [
-            { agent: 'classifier', status: 'ok', output: { intent } },
             {
-              agent: 'chatHandler',
+              agent: 'triage',
               status: 'ok',
-              output: accumulatedState.chatResponse,
+              output: {
+                intent,
+                response: accumulatedState.chatResponse,
+              },
             },
           ],
           report: (accumulatedState.summary as string) ?? '',
@@ -1337,19 +1626,58 @@ export async function* runAnalysisGraphStream(
       return;
     }
 
+    // Handoff: risk_only 路径
+    if (intent === 'risk_only') {
+      const usedAgents = ['triage', 'riskStep', 'summaryStep'];
+      const steps: GraphOrchestrationStep[] = [
+        {
+          agent: 'triage',
+          status: 'ok',
+          output: {
+            intent,
+            handoffReason: accumulatedState.handoffReason,
+          },
+        },
+        {
+          agent: 'riskStep',
+          status: 'ok',
+          output: accumulatedState.riskResult,
+        },
+        {
+          agent: 'summaryStep',
+          status: 'ok',
+          output: accumulatedState.summary,
+        },
+      ];
+      yield {
+        type: 'done',
+        result: {
+          mode: 'fixed',
+          status: 'completed',
+          intent: 'risk_only',
+          usedAgents,
+          steps,
+          report: (accumulatedState.summary as string) ?? '',
+          toolLoopCount: (accumulatedState.toolLoopCount as number) ?? 0,
+          reviseCount: (accumulatedState.reviseCount as number) ?? 0,
+          handoffReason: (accumulatedState.handoffReason as string) ?? '',
+        },
+      };
+      return;
+    }
+
     // analyze 路径
     const usedAgents = [
-      'classifier',
+      'triage',
       'extractStep',
       'clarifyStep',
-      // 第 9 章：analysisSupervisor 替代 analysisSubgraph
       'analysisSupervisor',
       'riskStep',
       'summaryStep',
     ];
 
     const steps: GraphOrchestrationStep[] = [
-      { agent: 'classifier', status: 'ok', output: { intent } },
+      { agent: 'triage', status: 'ok', output: { intent } },
       {
         agent: 'extractStep',
         status: 'ok',
