@@ -119,37 +119,53 @@ export function createExpertSubGraph({
 
   /** agentNode — 绑定工具的 LLM 推理节点 */
   async function agentNode(state: ExpertState): Promise<Partial<ExpertState>> {
-    if (state.messages.length === 0) {
-      // 首轮：构造上下文
-      const contextParts: string[] = [`## 原始需求\n${state.input}`];
+    try {
+      if (state.messages.length === 0) {
+        // 首轮：构造上下文
+        const contextParts: string[] = [`## 原始需求\n${state.input}`];
 
-      if (state.extracted && Object.keys(state.extracted).length > 0) {
-        contextParts.push(
-          `## 已抽取字段\n${JSON.stringify(state.extracted, null, 2)}`,
-        );
+        if (state.extracted && Object.keys(state.extracted).length > 0) {
+          contextParts.push(
+            `## 已抽取字段\n${JSON.stringify(state.extracted, null, 2)}`,
+          );
+        }
+
+        if (state.clarified && Object.keys(state.clarified).length > 0) {
+          contextParts.push(
+            `## 澄清结果\n${JSON.stringify(state.clarified, null, 2)}`,
+          );
+        }
+
+        const response = await agentModel.invoke([
+          new SystemMessage(systemPrompt),
+          new HumanMessage(contextParts.join('\n\n')),
+        ]);
+
+        return { messages: [response] };
       }
 
-      if (state.clarified && Object.keys(state.clarified).length > 0) {
-        contextParts.push(
-          `## 澄清结果\n${JSON.stringify(state.clarified, null, 2)}`,
-        );
-      }
-
+      // 后续轮次：注入 system prompt + 完整消息历史
       const response = await agentModel.invoke([
         new SystemMessage(systemPrompt),
-        new HumanMessage(contextParts.join('\n\n')),
+        ...state.messages,
       ]);
 
       return { messages: [response] };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[${outputField}] 专家调用失败，降级: ${errorMsg}`);
+
+      // 降级：返回一条 AIMessage，内容为降级标记。
+      // finalizeNode 会将其解析为降级输出，aggregatorNode 识别标记后标注。
+      const degradationContent = [
+        `[${outputField} 专家暂不可用：${errorMsg}]`,
+        `本项分析已跳过，建议人工补充。`,
+      ].join(' ');
+
+      return {
+        messages: [new AIMessage({ content: degradationContent })],
+      };
     }
-
-    // 后续轮次：注入 system prompt + 完整消息历史
-    const response = await agentModel.invoke([
-      new SystemMessage(systemPrompt),
-      ...state.messages,
-    ]);
-
-    return { messages: [response] };
   }
 
   /** toolsNode — 带计数器的工具执行节点 */
@@ -207,6 +223,17 @@ export function createExpertSubGraph({
         typeof lastAnalysis.content === 'string'
           ? lastAnalysis.content
           : JSON.stringify(lastAnalysis.content);
+
+      // 识别降级标记：agentNode catch 块写入的降级消息
+      if (content.startsWith('[') && content.includes('专家暂不可用')) {
+        return {
+          expertOutput: {
+            _degraded: true,
+            _message: content,
+            suggestions: [`⚠️ ${content}`],
+          },
+        };
+      }
 
       return { expertOutput: parseJson(content, EXPERT_FALLBACK) };
     } catch (err) {
@@ -603,6 +630,8 @@ export type ExpertName =
 const SupervisorDecisionSchema = z.object({
   activeExperts: z
     .array(z.enum(['functional', 'performance', 'security', 'compliance']))
+    .min(1)
+    .max(4)
     .describe(
       '本次分析需要激活的专家列表。根据需求的特征选择合适的专家，' +
         '至少选择 1 个，最多 4 个。functional 负责功能分解与业务逻辑，' +
@@ -737,33 +766,66 @@ export function createAggregatorNode(model: BaseChatModel) {
     try {
       const activeExperts = state.activeExperts ?? [];
 
-      // 收集被激活专家的输出
+      // 收集被激活专家的输出，识别降级标记
       const expertReports: string[] = [];
       const allSuggestions: string[] = [];
       const fallbackResult = getAggregatorFallback(activeExperts);
+      const degradedExperts: string[] = [];
 
       if (activeExperts.includes('functional') && state.functionalAnalysis) {
-        expertReports.push(
-          `## 功能分析专家结论\n${JSON.stringify(state.functionalAnalysis, null, 2)}`,
-        );
+        const fa = state.functionalAnalysis;
+        if ((fa as any)?._degraded) {
+          expertReports.push(
+            `## 功能分析专家结论\n**⚠️ 降级：${(fa as any)?._message ?? '专家不可用'}**`,
+          );
+          degradedExperts.push('functional');
+        } else {
+          expertReports.push(
+            `## 功能分析专家结论\n${JSON.stringify(state.functionalAnalysis, null, 2)}`,
+          );
+        }
       }
 
       if (activeExperts.includes('performance') && state.performanceAnalysis) {
-        expertReports.push(
-          `## 性能分析专家结论\n${JSON.stringify(state.performanceAnalysis, null, 2)}`,
-        );
+        const pa = state.performanceAnalysis;
+        if ((pa as any)?._degraded) {
+          expertReports.push(
+            `## 性能分析专家结论\n**⚠️ 降级：${(pa as any)?._message ?? '专家不可用'}**`,
+          );
+          degradedExperts.push('performance');
+        } else {
+          expertReports.push(
+            `## 性能分析专家结论\n${JSON.stringify(state.performanceAnalysis, null, 2)}`,
+          );
+        }
       }
 
       if (activeExperts.includes('security') && state.securityAnalysis) {
-        expertReports.push(
-          `## 安全分析专家结论\n${JSON.stringify(state.securityAnalysis, null, 2)}`,
-        );
+        const sa = state.securityAnalysis;
+        if ((sa as any)?._degraded) {
+          expertReports.push(
+            `## 安全分析专家结论\n**⚠️ 降级：${(sa as any)?._message ?? '专家不可用'}**`,
+          );
+          degradedExperts.push('security');
+        } else {
+          expertReports.push(
+            `## 安全分析专家结论\n${JSON.stringify(state.securityAnalysis, null, 2)}`,
+          );
+        }
       }
 
       if (activeExperts.includes('compliance') && state.complianceAnalysis) {
-        expertReports.push(
-          `## 合规分析专家结论\n${JSON.stringify(state.complianceAnalysis, null, 2)}`,
-        );
+        const ca = state.complianceAnalysis;
+        if ((ca as any)?._degraded) {
+          expertReports.push(
+            `## 合规分析专家结论\n**⚠️ 降级：${(ca as any)?._message ?? '专家不可用'}**`,
+          );
+          degradedExperts.push('compliance');
+        } else {
+          expertReports.push(
+            `## 合规分析专家结论\n${JSON.stringify(state.complianceAnalysis, null, 2)}`,
+          );
+        }
       }
 
       // 如果没有任何专家输出，返回降级结果
@@ -771,14 +833,20 @@ export function createAggregatorNode(model: BaseChatModel) {
         return { analysisResult: fallbackResult };
       }
 
+      const degradedNote =
+        degradedExperts.length > 0
+          ? `\n\n## ⚠️ 降级说明\n以下专家不可用，相关分析已跳过：${degradedExperts.join('、')}\n请在报告的对应维度标注"该维度分析降级，建议人工补充"。\n`
+          : '';
+
       const aggregatorModel = model;
       const response = await aggregatorModel.invoke([
         new SystemMessage(AGGREGATOR_SYSTEM_PROMPT),
         new HumanMessage(
           `## 原始需求\n${state.input}\n\n` +
             `## 激活的专家\n${activeExperts.join(', ')}\n\n` +
-            `${expertReports.join('\n\n---\n\n')}\n\n` +
-            `请按照合并规则，将以上专家结论合并为统一的分析报告 JSON。`,
+            `${expertReports.join('\n\n---\n\n')}` +
+            degradedNote +
+            `\n请按照合并规则，将以上专家结论合并为统一的分析报告 JSON。`,
         ),
       ]);
 

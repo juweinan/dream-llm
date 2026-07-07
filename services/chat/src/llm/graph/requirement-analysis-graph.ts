@@ -4,7 +4,6 @@ import {
   START,
   END,
   MessagesAnnotation,
-  MemorySaver,
   type BaseCheckpointSaver,
 } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
@@ -21,6 +20,7 @@ import {
   createAnalysisSupervisorSubGraph,
   type SupervisorState,
 } from './experts';
+import { getCheckpointer } from './postgres-checkpointer';
 
 // ---------------------------------------------------------------
 // JSON parse helper
@@ -344,13 +344,16 @@ const model = createChatModel();
 // ---------------------------------------------------------------
 // Checkpointer — 多专家并行场景断点恢复
 //
-// 使用 MemorySaver 在进程内持久化图状态。生产环境可替换为
-// SqliteSaver 或 PostgresSaver 以支持跨进程恢复。
+// 生产环境：PostgresCheckpointSaver（复用 pg Pool，持久化，自动 setup）
+// 开发环境：DATABASE_URL 未设置时回退 MemorySaver。
+//
+// thread_id 命名规范：user-{userId}:session-{sessionId}
+//   构建工具：buildThreadId({ userId, sessionId })
 //
 // 编译时注入后，Supervisor 子图中 4 个并行 Send 若有任一
 // 超时/异常，恢复时只需重跑未完成的专家，不重复执行已完成的。
 // ---------------------------------------------------------------
-const checkpointer: BaseCheckpointSaver = new MemorySaver();
+const checkpointer: BaseCheckpointSaver = getCheckpointer();
 
 // ---------------------------------------------------------------
 // Mock tools for ReAct analysis subgraph
