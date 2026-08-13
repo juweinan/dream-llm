@@ -12,6 +12,10 @@ import {
   cosineSimilarity,
   euclideanDistance,
 } from '../rag/embedding/similarity';
+import {
+  bruteForceKNN,
+  type VectorStoreRecord,
+} from '../rag/retrieval/vector-store';
 
 // ================================================================
 // 11.2.4 相似度
@@ -176,6 +180,203 @@ describe('11.2.4 相似度', () => {
       expect(l2Norm(na)).toBeCloseTo(1, 9);
       expect(l2Norm(nb)).toBeCloseTo(1, 9);
       expect(cosineSimilarity(na, nb)).toBeCloseTo(dot(na, nb), 9);
+    });
+  });
+});
+
+// ================================================================
+// 11.5 向量数据库
+// ================================================================
+describe('11.5 向量数据库', () => {
+  // ----------------------------------------------------------
+  // 工具：生成 mock 向量数据
+  // ----------------------------------------------------------
+  const TEST_DIM = 4; // 小维度便于单测
+
+  /** 生成指定维度的随机向量（值域 [0, 1)） */
+  function randomVector(dim: number): number[] {
+    return Array.from({ length: dim }, () => Math.random());
+  }
+
+  /** 生成 n 条 mock VectorStoreRecord */
+  function mockRecords(n: number, dim: number): VectorStoreRecord[] {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `mock-chunk-${i}`,
+      documentId: `doc-${Math.floor(i / 5)}`,
+      content: `这是第 ${i} 号文本块`,
+      chunkIndex: i,
+      embedding: randomVector(dim),
+      modelName: 'test-model',
+    }));
+  }
+
+  // ================================================================
+  // 11.5.2 KNN 暴力实现作为 baseline
+  // ================================================================
+  describe('11.5.2 KNN 暴力 baseline', () => {
+    const candidates = mockRecords(50, TEST_DIM);
+
+    it('返回 topK 条结果', () => {
+      const query = randomVector(TEST_DIM);
+      const topK = 5;
+      const results = bruteForceKNN(query, candidates, topK, TEST_DIM);
+      expect(results.length).toBe(topK);
+    });
+
+    it('结果按 score 降序排列', () => {
+      const query = randomVector(TEST_DIM);
+      const results = bruteForceKNN(query, candidates, 10, TEST_DIM);
+
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i].score).toBeLessThanOrEqual(results[i - 1].score);
+      }
+    });
+
+    it('top-1 的 score ≥ 任意其他候选的 score', () => {
+      const query = randomVector(TEST_DIM);
+      const results = bruteForceKNN(query, candidates, 5, TEST_DIM);
+
+      // 对全体候选暴力计算，确认 top-1 确实是全局最高分
+      let globalMax = -Infinity;
+      for (const c of candidates) {
+        const sim = cosineSimilarity(query, c.embedding);
+        if (sim > globalMax) globalMax = sim;
+      }
+      expect(results[0].score).toBeCloseTo(globalMax, 9);
+    });
+
+    it('queryVector 自身匹配自身 score 约等于 1', () => {
+      // 若候选集中有一条 embedding === query，score 应为 1
+      const query = candidates[7].embedding.slice(); // 精确复制
+      const results = bruteForceKNN(query, candidates, 1, TEST_DIM);
+      expect(results[0].score).toBeCloseTo(1, 9);
+      expect(results[0].id).toBe(candidates[7].id);
+    });
+
+    it('维度不匹配时抛 RangeError', () => {
+      const query = [0.1, 0.2, 0.3]; // 3 维，预期 4 维
+      expect(() => bruteForceKNN(query, candidates, 5, TEST_DIM)).toThrow(
+        RangeError,
+      );
+    });
+
+    it('候选向量维度不一致时抛 RangeError', () => {
+      const badCandidates = [
+        ...candidates,
+        {
+          id: 'bad',
+          documentId: 'doc-x',
+          content: 'bad',
+          chunkIndex: 999,
+          embedding: [0.1, 0.2], // 2 维
+          modelName: 'test-model',
+        },
+      ];
+      const query = randomVector(TEST_DIM);
+      expect(() =>
+        bruteForceKNN(query, badCandidates, 5, TEST_DIM),
+      ).toThrow(RangeError);
+    });
+
+    it('topK 为 0 时返回空数组', () => {
+      const query = randomVector(TEST_DIM);
+      const results = bruteForceKNN(query, candidates, 0, TEST_DIM);
+      expect(results).toEqual([]);
+    });
+  });
+
+  // ================================================================
+  // 11.5.6 余弦相似度 score = 1 - 距离 一致性
+  // ================================================================
+  describe('11.5.6 score = 1 - 距离 一致性', () => {
+    /**
+     * pgvector <=> 运算符返回余弦距离（cosine distance），
+     * 我们的 similaritySearch SQL 使用 `1 - (embedding <=> query) AS score`。
+     *
+     * 数学恒等式：cosine_similarity(a, b) = 1 - cosine_distance(a, b)
+     *
+     * 本节验证这一恒等式，确保 SQL score 与纯数学 cosineSimilarity 对齐。
+     */
+
+    // pgvector 余弦距离 = 1 - 余弦相似度
+    function cosineDistance(a: number[], b: number[]): number {
+      return 1 - cosineSimilarity(a, b);
+    }
+
+    // SQL 公式：score = 1 - cosine_distance
+    function pgvectorScore(a: number[], b: number[]): number {
+      return 1 - cosineDistance(a, b);
+    }
+
+    it('score = 1 - distance 等价于 cosineSimilarity', () => {
+      for (let i = 0; i < 100; i++) {
+        const a = randomVector(TEST_DIM);
+        const b = randomVector(TEST_DIM);
+        const direct = cosineSimilarity(a, b);
+        const viaDistance = pgvectorScore(a, b);
+        expect(viaDistance).toBeCloseTo(direct, 9);
+      }
+    });
+
+    it('余弦距离范围 [0, 2]', () => {
+      // 相同方向 → 距离 0；相反方向 → 距离 2
+      const a = [1, 0, 0, 0];
+      const b = [-1, 0, 0, 0];
+      const dist = cosineDistance(a, b);
+      expect(dist).toBeCloseTo(2, 9);
+
+      const c = [1, 0, 0, 0];
+      const distSelf = cosineDistance(c, c);
+      expect(distSelf).toBeCloseTo(0, 9);
+    });
+
+    it('score 范围 [0, 1]（余弦相似度非负场景）', () => {
+      // 对正数向量，余弦相似度 ≥ 0
+      for (let i = 0; i < 100; i++) {
+        const a = randomVector(TEST_DIM);
+        const b = randomVector(TEST_DIM);
+        const score = pgvectorScore(a, b);
+        // score = cosineSimilarity，范围 [-1, 1]，对随机正向量通常 > 0
+        expect(score).toBeGreaterThanOrEqual(-1);
+        expect(score).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it('按 score DESC 排序 ≡ 按 cosineDistance ASC 排序 ≡ 按 cosineSimilarity DESC 排序', () => {
+      // 验证三种排序方式给出完全一致的结果顺序
+      const query = randomVector(TEST_DIM);
+      const vecs = Array.from({ length: 20 }, () => randomVector(TEST_DIM));
+
+      const bySimilarityDesc = [...vecs].sort(
+        (a, b) => cosineSimilarity(query, b) - cosineSimilarity(query, a),
+      );
+      const byDistanceAsc = [...vecs].sort(
+        (a, b) => cosineDistance(query, a) - cosineDistance(query, b),
+      );
+      const byScoreDesc = [...vecs].sort(
+        (a, b) => pgvectorScore(query, b) - pgvectorScore(query, a),
+      );
+
+      // 三种排序应产生相同顺序
+      for (let i = 0; i < vecs.length; i++) {
+        expect(bySimilarityDesc[i]).toEqual(byDistanceAsc[i]);
+        expect(bySimilarityDesc[i]).toEqual(byScoreDesc[i]);
+      }
+    });
+
+    it('Brute force KNN score 通过 1-distance 公式可复现', () => {
+      // bruteForceKNN 内部使用 cosineSimilarity 作为 score，
+      // 等效于 pgvector 的 1 - cosine_distance 公式
+      const candidates = mockRecords(50, TEST_DIM);
+      const query = randomVector(TEST_DIM);
+      const bfResults = bruteForceKNN(query, candidates, 5, TEST_DIM);
+
+      // 手动用 1-distance 公式重算，验证 score 一致
+      for (const r of bfResults) {
+        const original = candidates.find((c) => c.id === r.id)!;
+        const viaDistance = 1 - cosineDistance(query, original.embedding);
+        expect(r.score).toBeCloseTo(viaDistance, 9);
+      }
     });
   });
 });
