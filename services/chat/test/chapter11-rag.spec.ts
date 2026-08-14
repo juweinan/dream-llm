@@ -4,7 +4,7 @@
 // 使用 bun:test 风格，mock-first，无需真实 API key 或数据库。
 // 运行：bun test services/chat/test/chapter11-rag.spec.ts
 // ---------------------------------------------------------------
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import {
   dot,
   l2Norm,
@@ -16,6 +16,15 @@ import {
   bruteForceKNN,
   type VectorStoreRecord,
 } from '../rag/retrieval/vector-store';
+import {
+  recallAtK,
+  mrr,
+  ndcgAtK,
+} from '../rag/evaluation/retrieval-metrics';
+import {
+  runRagas,
+  type RagasSample,
+} from '../rag/evaluation/ragas-runner';
 
 // ================================================================
 // 11.2.4 相似度
@@ -377,6 +386,245 @@ describe('11.5 向量数据库', () => {
         const viaDistance = 1 - cosineDistance(query, original.embedding);
         expect(r.score).toBeCloseTo(viaDistance, 9);
       }
+    });
+  });
+});
+
+// ================================================================
+// 11.7 评估
+// ================================================================
+describe('11.7 评估', () => {
+  // ----------------------------------------------------------
+  // 11.7.1 检索指标（Recall@K / MRR / NDCG@K）
+  // ----------------------------------------------------------
+  describe('11.7.1 检索指标', () => {
+    // ---------------- Recall@K ----------------
+    describe('Recall@K', () => {
+      it('所有 relevant 都在 Top-K 时 = 1', () => {
+        const retrieved = ['d1', 'd2', 'd3', 'd4', 'd5'];
+        const relevant = ['d1', 'd2', 'd3'];
+        expect(recallAtK(retrieved, relevant, 5)).toBe(1);
+      });
+
+      it('部分命中时 = 命中数 / 相关总数', () => {
+        const retrieved = ['d1', 'd9', 'd2', 'd8', 'd7'];
+        const relevant = ['d1', 'd2', 'd3'];
+        // 前 5 位命中 d1、d2 → 2/3
+        expect(recallAtK(retrieved, relevant, 5)).toBeCloseTo(2 / 3, 9);
+      });
+
+      it('k 截断影响结果：相关文档在 k 之外不计入', () => {
+        const retrieved = ['d1', 'd2', 'd3', 'd4'];
+        const relevant = ['d4'];
+        // k=3 时 d4 不在 Top-3 → 0
+        expect(recallAtK(retrieved, relevant, 3)).toBe(0);
+        // k=4 时 d4 在 Top-4 → 1
+        expect(recallAtK(retrieved, relevant, 4)).toBe(1);
+      });
+
+      it('无相关文档时 = 1（无遗漏）', () => {
+        expect(recallAtK(['d1', 'd2'], [], 5)).toBe(1);
+      });
+
+      it('k <= 0 抛 RangeError', () => {
+        expect(() => recallAtK(['d1'], ['d1'], 0)).toThrow(RangeError);
+      });
+    });
+
+    // ---------------- MRR ----------------
+    describe('MRR', () => {
+      it('第一个相关在第 1 位 → 1.0', () => {
+        const ranked = [['d1', 'd2', 'd3']];
+        const relevant = [['d1']];
+        expect(mrr(ranked, relevant)).toBe(1);
+      });
+
+      it('第一个相关在第 2 位 → 0.5', () => {
+        const ranked = [['d9', 'd1', 'd3']];
+        const relevant = [['d1']];
+        expect(mrr(ranked, relevant)).toBe(0.5);
+      });
+
+      it('多查询取平均', () => {
+        const ranked = [
+          ['d1', 'd2'], // rank 1 → 1.0
+          ['d9', 'd1'], // rank 2 → 0.5
+        ];
+        const relevant = [['d1'], ['d1']];
+        expect(mrr(ranked, relevant)).toBeCloseTo((1 + 0.5) / 2, 9);
+      });
+
+      it('无任何相关 → 0', () => {
+        const ranked = [['d9', 'd8', 'd7']];
+        const relevant = [['d1']];
+        expect(mrr(ranked, relevant)).toBe(0);
+      });
+
+      it('空输入 → 0', () => {
+        expect(mrr([], [])).toBe(0);
+      });
+    });
+
+    // ---------------- NDCG@K ----------------
+    describe('NDCG@K', () => {
+      it('单个完全命中 = 1.0', () => {
+        const retrieved = ['d1', 'd2', 'd3'];
+        const relevant = ['d1'];
+        expect(ndcgAtK(retrieved, relevant, 3)).toBe(1);
+      });
+
+      it('完全命中且排在理想位置 = 1.0', () => {
+        const retrieved = ['d1', 'd2', 'd3', 'd4'];
+        const relevant = ['d1', 'd2', 'd3'];
+        // 相关文档排在前 3，DCG = IDCG → 1.0
+        expect(ndcgAtK(retrieved, relevant, 4)).toBe(1);
+      });
+
+      it('排序靠后时 < 1.0', () => {
+        const retrieved = ['d9', 'd1', 'd2', 'd3'];
+        const relevant = ['d1', 'd2', 'd3'];
+        expect(ndcgAtK(retrieved, relevant, 4)).toBeLessThan(1);
+      });
+
+      it('无相关文档时 = 1', () => {
+        expect(ndcgAtK(['d1', 'd2'], [], 5)).toBe(1);
+      });
+
+      it('k <= 0 抛 RangeError', () => {
+        expect(() => ndcgAtK(['d1'], ['d1'], 0)).toThrow(RangeError);
+      });
+    });
+  });
+
+  // ----------------------------------------------------------
+  // 11.7.3 RAGAS 接入（mock fetch，不依赖真实服务）
+  // ----------------------------------------------------------
+  describe('11.7.3 RAGAS 接入', () => {
+    const sampleInput = {
+      samples: [
+        {
+          question: '什么是向量检索？',
+          answer: '通过向量相似度进行近邻搜索。',
+          contexts: ['向量检索利用 embedding 计算相似度'],
+          ground_truth: '向量检索是近邻搜索技术',
+        },
+      ] as RagasSample[],
+      metrics: ['faithfulness', 'answer_relevancy'],
+    };
+
+    /** 构造一个可返回指定响应的 mock fetch */
+    function mockFetchResponse(
+      status: number,
+      body: unknown,
+    ): ReturnType<typeof mock> {
+      return mock(async () => {
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => body,
+        } as Response;
+      });
+    }
+
+    it('RAGAS 可用时返回指标分数映射', async () => {
+      const fetchMock = mockFetchResponse(200, {
+        faithfulness: 0.85,
+        answer_relevancy: 0.9,
+      });
+
+      const scores = await runRagas(sampleInput, {
+        baseUrl: 'http://localhost:9999',
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        warn: () => {},
+        maxRetries: 0,
+      });
+
+      expect(scores).toEqual({ faithfulness: 0.85, answer_relevancy: 0.9 });
+      // 请求体校验
+      const [, init] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        { body: string; method: string },
+      ];
+      expect(init.method).toBe('POST');
+      const body = JSON.parse(init.body);
+      expect(body.samples.length).toBe(1);
+      expect(body.metrics).toEqual(['faithfulness', 'answer_relevancy']);
+    });
+
+    it('RAGAS 不可用时返回 null + warn，不抛错', async () => {
+      const warnCalls: string[] = [];
+      const fetchMock = mock(async () => {
+        throw new Error('ECONNREFUSED');
+      });
+
+      const scores = await runRagas(sampleInput, {
+        baseUrl: 'http://localhost:9999',
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        warn: (msg) => warnCalls.push(msg),
+        maxRetries: 0,
+      });
+
+      expect(scores).toBeNull();
+      expect(warnCalls.length).toBe(1);
+      expect(warnCalls[0]).toContain('RAGAS 评测不可用');
+      expect(warnCalls[0]).toContain('ECONNREFUSED');
+    });
+
+    it('非 2xx 响应同样降级为 null', async () => {
+      const warnCalls: string[] = [];
+      const fetchMock = mockFetchResponse(500, { error: 'internal' });
+
+      const scores = await runRagas(sampleInput, {
+        baseUrl: 'http://localhost:9999',
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        warn: (msg) => warnCalls.push(msg),
+        maxRetries: 0,
+      });
+
+      expect(scores).toBeNull();
+      expect(warnCalls[0]).toContain('500');
+    });
+
+    it('失败后按 maxRetries 重试，最终仍返回 null', async () => {
+      const fetchMock = mock(async () => {
+        throw new Error('timeout');
+      });
+
+      const scores = await runRagas(sampleInput, {
+        baseUrl: 'http://localhost:9999',
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        warn: () => {},
+        maxRetries: 3,
+      });
+
+      expect(scores).toBeNull();
+      // 1 次首次 + 3 次重试
+      expect(fetchMock.mock.calls.length).toBe(4);
+    });
+
+    it('重试成功（第 2 次成功）则返回结果', async () => {
+      let callCount = 0;
+      const fetchMock = mock(async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error('first attempt failed');
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ faithfulness: 0.75 }),
+        } as Response;
+      });
+
+      const scores = await runRagas(sampleInput, {
+        baseUrl: 'http://localhost:9999',
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        warn: () => {},
+        maxRetries: 3,
+      });
+
+      expect(scores).toEqual({ faithfulness: 0.75 });
+      expect(callCount).toBe(2);
     });
   });
 });
