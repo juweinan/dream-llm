@@ -25,6 +25,10 @@ import {
   runRagas,
   type RagasSample,
 } from '../rag/evaluation/ragas-runner';
+import {
+  createRagTool,
+  type RagToolDeps,
+} from '../rag/agent/rag-tool';
 
 // ================================================================
 // 11.2.4 相似度
@@ -626,5 +630,98 @@ describe('11.7 评估', () => {
       expect(scores).toEqual({ faithfulness: 0.75 });
       expect(callCount).toBe(2);
     });
+  });
+});
+
+// ================================================================
+// 11.10 集成 Agent — 将 RAG 包装为 LangChain Tool
+// ================================================================
+describe('11.10 集成 Agent', () => {
+  /** 构造 mock deps：ragAsk 返回固定结果，budget 可切换 allow/reject */
+  function buildDeps(overrides?: {
+    ragAsk?: RagToolDeps['ragAsk'];
+    budgetAction?: 'allow' | 'reject';
+  }): RagToolDeps {
+    return {
+      ragAsk:
+        overrides?.ragAsk ??
+        mock(async () => ({
+          answer: '向量检索是通过 embedding 计算相似度进行近邻搜索的技术。',
+          citations: [{ docId: 'doc-1', chunkIndex: 0, score: 0.92 }],
+        })),
+      resolveBudgetAction: mock(() => ({
+        action: overrides?.budgetAction ?? 'allow',
+        reason:
+          overrides?.budgetAction === 'reject'
+            ? 'budget exceeded (100%)'
+            : 'budget OK (10%)',
+      })),
+      budgetUsedPercent: overrides?.budgetAction === 'reject' ? 100 : 10,
+      agentName: 'functional_expert',
+    };
+  }
+
+  it('allow 时工具调用返回的 JSON 含 answer / citations', async () => {
+    const deps = buildDeps({ budgetAction: 'allow' });
+    const ragTool = createRagTool(deps);
+
+    const raw = (await ragTool.invoke({
+      question: '什么是向量检索？',
+      topK: 3,
+    })) as string;
+
+    const parsed = JSON.parse(raw);
+    expect(parsed.answer).toBeTruthy();
+    expect(Array.isArray(parsed.citations)).toBe(true);
+    expect(parsed.citations.length).toBeGreaterThan(0);
+
+    // 确认 ragAsk 被调用，且入参正确
+    expect(deps.ragAsk).toHaveBeenCalled();
+  });
+
+  it('reject 时返回 error: budget_exceeded', async () => {
+    const deps = buildDeps({ budgetAction: 'reject' });
+    const ragTool = createRagTool(deps);
+
+    const raw = (await ragTool.invoke({
+      question: '什么是向量检索？',
+    })) as string;
+
+    const parsed = JSON.parse(raw);
+    expect(parsed.error).toBe('budget_exceeded');
+    // reject 时不应调用 ragAsk（预算检查在最前，避免昂贵调用）
+    expect(deps.ragAsk).not.toHaveBeenCalled();
+  });
+
+  it('description 字符串包含"不适用"关键词，避免闲聊场景误调用', () => {
+    const deps = buildDeps();
+    const ragTool = createRagTool(deps);
+
+    expect(ragTool.description).toContain('不适用');
+    // 描述应同时点明适用场景，帮助 LLM 判断何时该调
+    expect(ragTool.description).toContain('适用');
+  });
+
+  it('预算检查先于 ragAsk 执行（reject 时 ragAsk 零调用）', async () => {
+    const ragAskMock = mock(async () => ({
+      answer: 'should not be called',
+      citations: [],
+    }));
+    const resolveMock = mock(() => ({
+      action: 'reject' as const,
+      reason: 'budget exceeded (100%)',
+    }));
+
+    const ragTool = createRagTool({
+      ragAsk: ragAskMock,
+      resolveBudgetAction: resolveMock,
+      budgetUsedPercent: 100,
+    });
+
+    await ragTool.invoke({ question: 'q' });
+
+    // resolveBudgetAction 一定被调用，ragAsk 因 reject 被短路
+    expect(resolveMock).toHaveBeenCalled();
+    expect(ragAskMock).not.toHaveBeenCalled();
   });
 });
